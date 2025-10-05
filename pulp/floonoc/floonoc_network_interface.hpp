@@ -24,6 +24,7 @@
 
 #include <vp/vp.hpp>
 #include <list>
+#include "floonoc.hpp"
 
 class FlooNoc;
 
@@ -35,7 +36,7 @@ class FlooNoc;
  * The network interface is then in charge of splitting the bursts into request which fit
  * the noc width and pass them to the closest router, so that they routed to the destination
  */
-class NetworkInterface : public vp::Block
+class NetworkInterface : public FloonocNode
 {
 public:
     NetworkInterface(FlooNoc *noc, int x, int y);
@@ -46,7 +47,7 @@ public:
     void handle_response(vp::IoReq *req);
     // This gets called by a router to unstall the output queue of the network interface after
     // a request was denied because the input queue of the router was full
-    void unstall_queue(int from_x, int from_y);
+    void unstall_queue(int from_x, int from_y) override;
 
     // This gets called by a router when the destination is reached and the request is sent from the router to the network interface
     void req_from_router(vp::IoReq *req, int pos_x, int pos_y);

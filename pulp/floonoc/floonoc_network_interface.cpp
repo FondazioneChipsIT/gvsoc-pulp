@@ -27,7 +27,7 @@
 #include "floonoc_network_interface.hpp"
 
 NetworkInterface::NetworkInterface(FlooNoc *noc, int x, int y)
-    : vp::Block(noc, "ni_" + std::to_string(x) + "_" + std::to_string(y)),
+    : FloonocNode(noc, "ni_" + std::to_string(x) + "_" + std::to_string(y)),
       fsm_event(this, &NetworkInterface::fsm_handler), signal_narrow_req(*this, "narrow_req", 64),
       signal_wide_req(*this, "wide_req", 64)
 {
@@ -323,7 +323,7 @@ void NetworkInterface::handle_addr_req(void){
             // In this case we must stall the network interface
             Router *router = this->noc->get_router(this->x, this->y, wide, req->get_is_write(), true);
 
-            this->stalled = router->handle_request(req, this->x, this->y);
+            this->stalled = router->handle_request(this, req, this->x, this->y);
             if (this->stalled)
             {
                 this->trace.msg(vp::Trace::LEVEL_TRACE, "Stalling network interface (position: (%d, %d))\n", this->x, this->y);
@@ -426,7 +426,7 @@ void NetworkInterface::handle_data_req(void){
 
     Router *router = this->noc->get_router(this->x, this->y, wide, req->get_is_write(), false);
 
-    this->stalled = router->handle_request(req, this->x, this->y);
+    this->stalled = router->handle_request(this, req, this->x, this->y);
 
     if (this->stalled)
     {

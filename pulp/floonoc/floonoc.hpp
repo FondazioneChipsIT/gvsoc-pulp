@@ -28,6 +28,14 @@ class Router;
 class NetworkInterface;
 
 
+class FloonocNode : public vp::Block
+{
+public:
+    FloonocNode(Block *parent, std::string name) : vp::Block(parent, name) {}
+    virtual void unstall_queue(int from_x, int from_y) = 0;
+};
+
+
 /**
  * @brief FlooNoc memory-map entry
  *
