@@ -138,7 +138,7 @@ vp::IoReqStatus NetworkInterface::req(vp::Block *__this, vp::IoReq *req)
 }
 
 
-void NetworkInterface::req_from_router(vp::IoReq *req, int from_x, int from_y)
+bool NetworkInterface::handle_request(FloonocNode *node, vp::IoReq *req, int from_x, int from_y)
 {
     NetworkInterface *origin_ni = *(NetworkInterface **)req->arg_get(FlooNoc::REQ_SRC_NI);
 
@@ -206,6 +206,8 @@ void NetworkInterface::req_from_router(vp::IoReq *req, int from_x, int from_y)
                         req, req->get_addr(), req->get_size(), this->x, this->y);
         this->handle_response(req);
     }
+
+    return false;
 }
 
 

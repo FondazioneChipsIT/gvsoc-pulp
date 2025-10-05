@@ -23,6 +23,7 @@
 #pragma once
 
 #include <vp/vp.hpp>
+#include <vp/itf/io.hpp>
 
 class Router;
 class NetworkInterface;
@@ -33,6 +34,7 @@ class FloonocNode : public vp::Block
 public:
     FloonocNode(Block *parent, std::string name) : vp::Block(parent, name) {}
     virtual void unstall_queue(int from_x, int from_y) = 0;
+    virtual bool handle_request(FloonocNode *node, vp::IoReq *req, int from_x, int from_y) = 0;
 };
 
 

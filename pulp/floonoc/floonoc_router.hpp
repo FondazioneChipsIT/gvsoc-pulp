@@ -51,7 +51,7 @@ public:
     void reset(bool active);
 
     // This gets called by other routers or a network interface to move a request to this router
-    bool handle_request(FloonocNode *node, vp::IoReq *req, int from_x, int from_y);
+    bool handle_request(FloonocNode *node, vp::IoReq *req, int from_x, int from_y) override;
     // Called by other routers or NI to unstall an output queue after an input queue became available
     void unstall_queue(int from_x, int from_y) override;
     // Called by NI to stall the queues in case no more request should be sent to NI
@@ -84,6 +84,7 @@ private:
     int queue_size;
     // The input queues for each direction and the local one
     RouterQueue *input_queues[5];
+    FloonocNode *output_nodes[5];
     // Clock event used to schedule FSM handler. This is scheduled eveytime something may need to
     // be done
     vp::ClockEvent fsm_event;

@@ -225,7 +225,7 @@ void Router::send_to_target_ni(vp::IoReq *req, int pos_x, int pos_y)
                     req, pos_x, pos_y);
     NetworkInterface *ni = this->noc->get_network_interface(pos_x, pos_y);
 
-    ni->req_from_router(req, pos_x, pos_y);
+    ni->handle_request(this, req, pos_x, pos_y);
 }
 
 // This is determining the routes the requests will take in the network

@@ -50,7 +50,7 @@ public:
     void unstall_queue(int from_x, int from_y) override;
 
     // This gets called by a router when the destination is reached and the request is sent from the router to the network interface
-    void req_from_router(vp::IoReq *req, int pos_x, int pos_y);
+    bool handle_request(FloonocNode *node, vp::IoReq *req, int from_x, int from_y) override;
     // Can be used to retrieve the x coordinate of the network interface
     int get_x();
     // Can be used to retrieve the y coordinate of the network interface
