@@ -24,6 +24,3 @@
 
  #include <cpu/iss/include/isa/rvXf16.hpp>
  #include <cpu/iss/include/isa/rvXf16alt.hpp>
- #include <pulp/chips/magia_v2/cv32/magia_idma_xif.hpp>
- #include <cpu/iss/include/isa/light_redmule.hpp>
- #include <pulp/chips/magia_v2/cv32/fractal_sync_xif.hpp>
