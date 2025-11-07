@@ -18,7 +18,6 @@
 
 import gvsoc.systree
 import cpu.iss.riscv
-from pulp.chips.magia_v2.cv32.isa import *
 from cpu.iss.isa_gen.isa_smallfloats import *
 
 # Tentative model of the cv32e40x adapted from pulp_cores.py
@@ -59,10 +58,10 @@ class CV32CoreTest(cpu.iss.riscv.RiscvCommon):
         misa = 0x40000000
         debug_handler = 0x1a190800
         fetch_enable = False
-        riscv_exceptions = True
+        riscv_exceptions = False
 
         # Instantiates the ISA from the string.
-        isa = cpu.iss.isa_gen.isa_riscv_gen.RiscvIsa('cv32-base', isa_str, extensions=[iDMA_Ctrl(), Rv32redmule(), FSync(), Xf16alt(), Xf16()])
+        isa = cpu.iss.isa_gen.isa_riscv_gen.RiscvIsa('cv32-base', isa_str, extensions=[Xf16alt(), Xf16()])
 
         super().__init__(parent, name, isa=isa, misa=misa, core_id=core_id,
                          debug_handler=debug_handler, fetch_enable=fetch_enable,

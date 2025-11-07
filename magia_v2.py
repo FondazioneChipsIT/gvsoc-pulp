@@ -17,7 +17,7 @@
 # Authors: Lorenzo Zuolo, Chips-IT (lorenzo.zuolo@chips.it)
 
 import gvsoc.runner
-from pulp.chips.magia.board import MagiaBoard
+from pulp.chips.magia_v2.board import MagiaV2Board
 
 class Target(gvsoc.runner.Target):
     def __init__(self, parser, options):
@@ -25,4 +25,4 @@ class Target(gvsoc.runner.Target):
         gapy_description="Magia v2 (memory mapped) board"
 
         super(Target, self).__init__(parser, options,
-              model=MagiaBoard)
+              model=MagiaV2Board)

@@ -18,7 +18,7 @@
 
 import gvsoc.systree
 
-class Magia_iDMA_Ctrl(gvsoc.systree.Component):
+class iDMA_mm_ctrl(gvsoc.systree.Component):
 
     def __init__(self,
                 parent: gvsoc.systree.Component,
@@ -26,13 +26,10 @@ class Magia_iDMA_Ctrl(gvsoc.systree.Component):
 
         super().__init__(parent, name)
 
-        self.add_sources(['pulp/chips/magia_v2/idma_ctrl/idma_ctrl.cpp'])
+        self.add_sources(['pulp/chips/magia_v2/idma_mm_ctrl/idma_mm_ctrl.cpp'])
 
-    def i_OFFLOAD_M(self) -> gvsoc.systree.SlaveItf:
-        return gvsoc.systree.SlaveItf(self, 'offload_m', signature='wire<IssOffloadInsn<uint32_t>*>')
-
-    def o_OFFLOAD_GRANT_M(self, itf: gvsoc.systree.SlaveItf):
-        self.itf_bind('offload_grant_m', itf, signature='wire<IssOffloadInsnGrant<uint32_t>*>')
+    def i_INPUT(self) -> gvsoc.systree.SlaveItf:
+        return gvsoc.systree.SlaveItf(self, 'input', signature='io')
 
     def o_OFFLOAD_iDMA0_AXI2OBI(self, itf: gvsoc.systree.SlaveItf):
         self.itf_bind('offload_idma0_axi2obi', itf, signature='wire<IssOffloadInsn<uint32_t>*>')

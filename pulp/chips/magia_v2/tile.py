@@ -32,9 +32,9 @@ from pulp.chips.magia_v2.arch import MagiaArch
 from pulp.chips.magia_v2.cv32.core import CV32CoreTest
 from pulp.light_redmule.light_redmule import LightRedmule
 from pulp.idma.snitch_dma import SnitchDma
-from pulp.chips.magia_v2.xif_decoder.xif_decoder import XifDecoder
-from pulp.chips.magia_v2.idma_ctrl.idma_ctrl import Magia_iDMA_Ctrl
-
+from pulp.chips.magia_v2.fractal_sync_mm_ctrl.fractal_sync_mm_ctrl import FSync_mm_ctrl
+from pulp.chips.magia_v2.idma_mm_ctrl.idma_mm_ctrl import iDMA_mm_ctrl
+from pulp.event_unit.event_unit_v3 import Event_unit
 
 
 # adapted from snitch cluster model
@@ -93,7 +93,7 @@ class MagiaTileTcdm(gvsoc.systree.Component):
 class MagiaV2Tile(gvsoc.systree.Component):
     def __init__(self, parent, name, parser, tid: int=0):
         super().__init__(parent, name)
-
+        
         # Core model from pulp cores
         core_cv32 = CV32CoreTest(self, f'tile-{tid}-cv32-core',core_id=tid)
 
@@ -108,11 +108,11 @@ class MagiaV2Tile(gvsoc.systree.Component):
         obi_xbar = router.Router(self, f'tile-{tid}-obi-xbar',bandwidth=4,latency=2,synchronous=True)
 
         # IDMA Controller
-        idma_ctrl= Magia_iDMA_Ctrl(self,f'tile-{tid}-idma-ctrl')
+        idma_mm_ctrl= iDMA_mm_ctrl(self,f'tile-{tid}-idma-ctrl-mm')
 
         # IDMA
-        idma0 = SnitchDma(self,f'tile-{tid}-idma0',loc_base=tid*MagiaArch.L1_TILE_OFFSET,loc_size=MagiaArch.L1_SIZE,tcdm_width=4,transfer_queue_size=1,burst_queue_size=2,burst_size=4)
-        idma1 = SnitchDma(self,f'tile-{tid}-idma1',loc_base=tid*MagiaArch.L1_TILE_OFFSET,loc_size=MagiaArch.L1_SIZE,tcdm_width=4,transfer_queue_size=1,burst_queue_size=4,burst_size=4)
+        idma0 = SnitchDma(self,f'tile-{tid}-idma0',loc_base=(tid*MagiaArch.L1_TILE_OFFSET),loc_size=MagiaArch.L1_SIZE,tcdm_width=4,transfer_queue_size=1,burst_queue_size=2,burst_size=4)
+        idma1 = SnitchDma(self,f'tile-{tid}-idma1',loc_base=(tid*MagiaArch.L1_TILE_OFFSET),loc_size=MagiaArch.L1_SIZE,tcdm_width=4,transfer_queue_size=1,burst_queue_size=4,burst_size=4)
 
         # Redmule
         redmule = LightRedmule(self, f'tile-{tid}-redmule',
@@ -123,12 +123,14 @@ class MagiaV2Tile(gvsoc.systree.Component):
                                     ce_width            = 8,
                                     ce_pipe             = 1,
                                     queue_depth         = 1,
-                                    loc_base            = tid*MagiaArch.L1_TILE_OFFSET)
+                                    loc_base            = (tid*MagiaArch.L1_TILE_OFFSET))
         
-        #new_rm=RedMule(self, 'new_redmule')
-        
-        # Xif decoder
-        xifdec = XifDecoder(self,f'tile-{tid}-xifdec')
+        # Fsync mm controller
+        fsync_mm_ctrl = FSync_mm_ctrl(self,f'tile-{tid}-fs-ctrl-mm')
+
+        # Event Unit
+        self.add_properties(self.load_property_file('/home/gvsoc/Documents/gvsoc/pulp/pulp/chips/magia_v2/event_unit.json'))
+        event_unit = Event_unit(self, f'tile-{tid}-event-unit', self.get_property('event_unit/config'))
 
         # UART
         stdout = Stdout(self, f'tile-{tid}-stdout',max_cluster=MagiaArch.NB_CLUSTERS,max_core_per_cluster=1,user_set_core_id=0,user_set_cluster_id=tid)
@@ -148,10 +150,24 @@ class MagiaV2Tile(gvsoc.systree.Component):
         # Bind: icache -> tile interconnect
         i_cache.o_REFILL(tile_xbar.i_INPUT())
 
-        # Bind obi xbar so that it can communicate with local reserved
-        obi_xbar.o_MAP(l1_tcdm.i_INPUT(0), name="local-reserved",
-                       base=MagiaArch.RESERVED_ADDR_START,
-                       size=MagiaArch.RESERVED_SIZE, rm_base=False)
+        # Bind obi xbar so that it can communicate with RedMule
+        obi_xbar.o_MAP(redmule.i_INPUT(), name=f'redmule-mm-{tid}-mem',
+                       base=MagiaArch.REDMULE_CTRL_ADDR_START,
+                       size=MagiaArch.REDMULE_CTRL_SIZE, rm_base=True)
+        
+        # Bind obi xbar so that it can communicate with iDMA mmapped controller
+        obi_xbar.o_MAP(idma_mm_ctrl.i_INPUT(), name=f'iDMA-ctrl-mm-{tid}-mem',
+                       base=MagiaArch.IDMA_CTRL_ADDR_START,
+                       size=MagiaArch.IDMA_CTRL_SIZE, rm_base=True)
+
+        # Bind obi xbar so that it can communicate with fsync mmapped controller
+        obi_xbar.o_MAP(fsync_mm_ctrl.i_INPUT(), name=f'fs-ctrl-mm-{tid}-mem',
+                       base=MagiaArch.FSYNC_CTRL_ADDR_START,
+                       size=MagiaArch.FSYNC_CTRL_SIZE, rm_base=True)
+        
+        # Bind obi xbar so that it can communicate with Event-Unit mmapped controller 
+        obi_xbar.add_mapping('event_unit', **self.get_property('event_unit/mapping'))
+        self.bind(obi_xbar, 'event_unit', event_unit, 'input')
         
         # Bind obi xbar so that it can communicate with local stack
         obi_xbar.o_MAP(l1_tcdm.i_INPUT(0), name="local-stack",
@@ -182,11 +198,6 @@ class MagiaV2Tile(gvsoc.systree.Component):
                         base=MagiaArch.L1_ADDR_START+(tid*MagiaArch.L1_TILE_OFFSET),
                         size=MagiaArch.L1_SIZE, rm_base=False)
         
-        # Bind tile xbar so that it can coomunicate with obi xbar reserved mem
-        tile_xbar.o_MAP(obi_xbar.i_INPUT(), name="axi-to-obi-reserved-mem",
-                        base=MagiaArch.RESERVED_ADDR_START+(tid*MagiaArch.L1_TILE_OFFSET),
-                        size=MagiaArch.RESERVED_SIZE, rm_base=False)
-        
         # Mapping used by obi xbar to communicate with tile xbar
         obi_xbar.o_MAP(tile_xbar.i_INPUT(), name="obi2axi-off-tile-l2-mem",
                        base=MagiaArch.L2_ADDR_START,
@@ -213,46 +224,42 @@ class MagiaV2Tile(gvsoc.systree.Component):
         self.__o_ENTRY(core_cv32.i_ENTRY())
         self.__o_FETCHEN(core_cv32.i_FETCHEN())
 
-        # Bind: xif decoder
-        core_cv32.o_OFFLOAD(xifdec.i_OFFLOAD_M())
-        xifdec.o_OFFLOAD_GRANT_M(core_cv32.i_OFFLOAD_GRANT())
-
-        # Bind: iDMA controller
-        xifdec.o_OFFLOAD_S1(idma_ctrl.i_OFFLOAD_M())
-        idma_ctrl.o_OFFLOAD_GRANT_M(xifdec.i_OFFLOAD_GRANT_S1())
-        idma_ctrl.o_IRQ_DMA0(core_cv32.i_IRQ(26))
-        idma_ctrl.o_IRQ_DMA1(core_cv32.i_IRQ(27))
-
         # Bind: idma0
         idma0.o_AXI(tile_xbar.i_INPUT())
         idma0.o_TCDM(l1_tcdm.i_INPUT(1)) #here we don't use the iDMA interleaver because here iDMA is directly connected to TCDM and iDMA has it's own interleaver for TCDM access (in iDMA-BE)
-        idma_ctrl.o_OFFLOAD_iDMA0_AXI2OBI(idma0.i_OFFLOAD())
-        idma0.o_OFFLOAD_GRANT(idma_ctrl.i_OFFLOAD_GRANT_iDMA0_AXI2OBI())
+        idma_mm_ctrl.o_OFFLOAD_iDMA0_AXI2OBI(idma0.i_OFFLOAD())
+        idma0.o_OFFLOAD_GRANT(idma_mm_ctrl.i_OFFLOAD_GRANT_iDMA0_AXI2OBI())
 
         # Bind: idma1
         idma1.o_AXI(tile_xbar.i_INPUT())
         idma1.o_TCDM(l1_tcdm.i_INPUT(2)) #here we don't use the iDMA interleaver because here iDMA is directly connected to TCDM and iDMA has it's own interleaver for TCDM access (in iDMA-BE)
-        idma_ctrl.o_OFFLOAD_iDMA1_OBI2AXI(idma1.i_OFFLOAD())
-        idma1.o_OFFLOAD_GRANT(idma_ctrl.i_OFFLOAD_GRANT_iDMA1_OBI2AXI())
+        idma_mm_ctrl.o_OFFLOAD_iDMA1_OBI2AXI(idma1.i_OFFLOAD())
+        idma1.o_OFFLOAD_GRANT(idma_mm_ctrl.i_OFFLOAD_GRANT_iDMA1_OBI2AXI())
 
         # Bind: redmule
         redmule.o_TCDM(l1_tcdm.i_REDMULE_INPUT())
-        xifdec.o_OFFLOAD_S2(redmule.i_OFFLOAD())
-        redmule.o_OFFLOAD_GRANT(xifdec.i_OFFLOAD_GRANT_S2())
-        redmule.o_IRQ(core_cv32.i_IRQ(31))
+
+        # Bind Event unit
+        self.bind(event_unit, 'clock_0', core_cv32, 'clock')
+        self.bind(core_cv32, 'irq_ack', event_unit, 'irq_ack_0')
+        self.bind(event_unit, 'irq_req_0', core_cv32, 'irq_req')
+        self.bind(idma_mm_ctrl, 'idma0_done_irq', event_unit, 'in_event_2_pe_0')
+        self.bind(idma_mm_ctrl, 'idma1_done_irq', event_unit, 'in_event_3_pe_0')
+        self.bind(fsync_mm_ctrl, 'fsync_done_irq', event_unit, 'in_event_24_pe_0')
+        self.bind(redmule, 'done_irq', event_unit, 'in_event_31_pe_0')
 
         # Bind fractal sync ports
-        xifdec.o_XIF_2_FRACTAL_EAST_WEST(self.__o_SLAVE_EAST_WEST_FRACTAL())
-        self.__i_SLAVE_EAST_WEST_FRACTAL(xifdec.i_FRACTAL_2_XIF_EAST_WEST())
+        fsync_mm_ctrl.o_XIF_2_FRACTAL_EAST_WEST(self.__o_SLAVE_EAST_WEST_FRACTAL())
+        self.__i_SLAVE_EAST_WEST_FRACTAL(fsync_mm_ctrl.i_FRACTAL_2_XIF_EAST_WEST())
 
-        xifdec.o_XIF_2_FRACTAL_NORD_SUD(self.__o_SLAVE_NORD_SUD_FRACTAL())
-        self.__i_SLAVE_NORD_SUD_FRACTAL(xifdec.i_FRACTAL_2_XIF_NORD_SUD())
+        fsync_mm_ctrl.o_XIF_2_FRACTAL_NORD_SUD(self.__o_SLAVE_NORD_SUD_FRACTAL())
+        self.__i_SLAVE_NORD_SUD_FRACTAL(fsync_mm_ctrl.i_FRACTAL_2_XIF_NORD_SUD())
 
-        xifdec.o_XIF_2_NEIGHBOUR_FRACTAL_EAST_WEST(self.__o_SLAVE_EAST_WEST_NEIGHBOUR_FRACTAL())
-        self.__i_SLAVE_EAST_WEST_NEIGHBOUR_FRACTAL(xifdec.i_NEIGHBOUR_FRACTAL_2_XIF_EAST_WEST())
+        fsync_mm_ctrl.o_XIF_2_NEIGHBOUR_FRACTAL_EAST_WEST(self.__o_SLAVE_EAST_WEST_NEIGHBOUR_FRACTAL())
+        self.__i_SLAVE_EAST_WEST_NEIGHBOUR_FRACTAL(fsync_mm_ctrl.i_NEIGHBOUR_FRACTAL_2_XIF_EAST_WEST())
 
-        xifdec.o_XIF_2_NEIGHBOUR_FRACTAL_NORD_SUD(self.__o_SLAVE_NORD_SUD_NEIGHBOUR_FRACTAL())
-        self.__i_SLAVE_NORD_SUD_NEIGHBOUR_FRACTAL(xifdec.i_NEIGHBOUR_FRACTAL_2_XIF_NORD_SUD())
+        fsync_mm_ctrl.o_XIF_2_NEIGHBOUR_FRACTAL_NORD_SUD(self.__o_SLAVE_NORD_SUD_NEIGHBOUR_FRACTAL())
+        self.__i_SLAVE_NORD_SUD_NEIGHBOUR_FRACTAL(fsync_mm_ctrl.i_NEIGHBOUR_FRACTAL_2_XIF_NORD_SUD())
 
         # Enable debug
         gdbserver.gdbserver.Gdbserver(self, 'gdbserver')        
