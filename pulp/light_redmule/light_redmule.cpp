@@ -797,7 +797,7 @@ uint32_t LightRedmule::op_foramt_parser(uint32_t op_format) {
     else if ((operation==1) && (data_format==0))
         compute_able=7;
     else 
-        this->trace.fatal("[LightRedmule] Selected wrong operation/format combination [op_format=%d-data_format=%d-operation=%d]",op_format,data_format,operation);
+        this->trace.fatal("[LightRedmule] Selected wrong operation/format combination [op_format=0x%x-data_format=%d-operation=%d]\n",op_format,data_format,operation);
     return compute_able;
 }
 
@@ -859,6 +859,8 @@ void LightRedmule::offload_sync(vp::Block *__this, IssOffloadInsn<uint32_t> *ins
     }
 }
 
+//This is a very basic reg-if tested and suited to work with MAGIA workloads.
+//Job queueing and full register mapping will be added in the future. 
 vp::IoReqStatus LightRedmule::req(vp::Block *__this, vp::IoReq *req)
 {
     LightRedmule *_this = (LightRedmule *)__this;
@@ -868,112 +870,164 @@ vp::IoReqStatus LightRedmule::req(vp::Block *__this, vp::IoReq *req)
     uint64_t size = req->get_size();
     bool is_write = req->get_is_write();
 
-    // _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] access (offset: 0x%x, size: 0x%x, is_write: %d, data:%x)\n", offset, size, is_write, *(uint32_t *)data);
+    //_this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] access (offset: 0x%x, size: 0x%x, is_write: %d, data:%x)\n", offset, size, is_write, *(uint32_t *)data);
 
-    if ((is_write == 0) && (offset == 32) && (_this->redmule_query == NULL) && (_this->state.get() == IDLE))
-    {
-        /************************
-        *  Synchronize Trigger  *
-        ************************/
-        //Sanity Check
-        _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] redmule configuration (M-N-K): %d, %d, %d\n", _this->m_size, _this->n_size, _this->k_size);
-        if ((_this->m_size == 0)||(_this->n_size == 0)||(_this->k_size == 0))
-        {
-            _this->trace.fatal("[LightRedmule] INVALID redmule configuration (M-N-K): %d, %d, %d\n", _this->m_size, _this->n_size, _this->k_size);
-            return vp::IO_REQ_OK;
-        }
-
-        //Initilaize redmule meta data
-        _this->init_redmule_meta_data();
-
-        //Trigger FSM
-        _this->state.set(PRELOAD);
-        _this->tcdm_block_total = _this->get_preload_access_block_number();
-        _this->fsm_counter      = 0;
-        _this->fsm_timestamp    = 0;
-        _this->timer_start      = _this->time.get_time();
-        _this->cycle_start      = _this->clock.get_cycles();
-        _this->compute_able     = 0;
-        _this->event_enqueue(_this->fsm_event, 1);
-
-        //Save Query
-        _this->redmule_query = req;
-        return vp::IO_REQ_PENDING;
-
-    } else if ((is_write == 0) && (offset == 36) && (_this->state.get() == IDLE)){
-        /*************************
-        *  Asynchronize Trigger  *
-        *************************/
-        //Sanity Check
-        _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] redmule configuration (M-N-K): %d, %d, %d\n", _this->m_size, _this->n_size, _this->k_size);
-        if ((_this->m_size == 0)||(_this->n_size == 0)||(_this->k_size == 0))
-        {
-            _this->trace.fatal("[LightRedmule] INVALID redmule configuration (M-N-K): %d, %d, %d\n", _this->m_size, _this->n_size, _this->k_size);
-            return vp::IO_REQ_OK;
-        }
-
-        //Initilaize redmule meta data
-        _this->init_redmule_meta_data();
-
-        //Trigger FSM
-        _this->state.set(PRELOAD);
-        _this->tcdm_block_total = _this->get_preload_access_block_number();
-        _this->fsm_counter      = 0;
-        _this->fsm_timestamp    = 0;
-        _this->timer_start      = _this->time.get_time();
-        _this->cycle_start      = _this->clock.get_cycles();
-        _this->compute_able     = 0;
-        _this->event_enqueue(_this->fsm_event, 1);
-
-    } else if ((is_write == 0) && (offset == 40) && (_this->redmule_query == NULL) && (_this->state.get() != IDLE)){
-        /*************************
-        *  Asynchronize Waiting  *
-        *************************/
-        _this->redmule_query = req;
-        return vp::IO_REQ_PENDING;
-
-    } else {
+    if (is_write == 1) {
         uint32_t value = *(uint32_t *)data;
-
         switch (offset) {
-            case 0:
-                _this->m_size = value;
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] Set M size 0x%x)\n", value);
+            case 0x00: {
+                if ((_this->redmule_query == NULL) && (_this->state.get() == IDLE)) {
+                    /************************
+                    *  Synchronize Trigger  *
+                    ************************/
+                    //Sanity Check
+                    _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] redmule configuration (M-N-K): %d, %d, %d. Compute able is %d\n", _this->m_size, _this->n_size, _this->k_size,_this->compute_able);
+                    if ((_this->m_size == 0)||(_this->n_size == 0)||(_this->k_size == 0))
+                    {
+                        _this->trace.fatal("[LightRedmule] INVALID redmule configuration (M-N-K): %d, %d, %d\n", _this->m_size, _this->n_size, _this->k_size);
+                        return vp::IO_REQ_OK;
+                    }
+
+                    //Initilaize redmule meta data
+                    _this->init_redmule_meta_data();
+
+                    //Trigger FSM
+                    _this->state.set(PRELOAD);
+                    _this->tcdm_block_total = _this->get_preload_access_block_number();
+                    _this->fsm_counter      = 0;
+                    _this->fsm_timestamp    = 0;
+                    _this->timer_start      = _this->time.get_time();
+                    _this->cycle_start      = _this->clock.get_cycles();
+                    _this->event_enqueue(_this->fsm_event, 1);
+
+                    //Save Query
+                    //_this->redmule_query = req;
+                }
                 break;
-            case 4:
-                _this->n_size = value;
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] Set N size 0x%x)\n", value);
-                break;
-            case 8:
-                _this->k_size = value;
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] Set K size 0x%x)\n", value);
-                break;
-            case 12:
+            }
+            case 0x40: {
                 _this->x_addr = value;
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] Set X addr 0x%x)\n", value);
+                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] Set X addr 0x%x)\n", _this->x_addr);
                 break;
-            case 16:
-                _this->y_addr = value;
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] Set Y addr 0x%x)\n", value);
-                break;
-            case 20:
-                _this->z_addr = value;
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] Set Z addr 0x%x)\n", value);
-                break;
-            case 24:
+            }
+            case 0x44: {
                 _this->w_addr = value;
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] Set W addr 0x%x)\n", value);
+                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] Set W addr 0x%x)\n", _this->w_addr);
                 break;
-            case 32:
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] write status\n");
+            }
+            case 0x48: {
+                _this->y_addr = value;
+                _this->z_addr = _this->y_addr;
+                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] Set Y addr 0x%x, Set Z addr 0x%x)\n", _this->y_addr,_this->z_addr);
                 break;
+            }
+            case 0x4C: { //REDMULE_MCFG0_PTR
+                _this->m_size=value & 0xFFFF;
+                _this->k_size=value >> 16;
+                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] Set M size %d, Set K size %d)\n", _this->m_size,_this->k_size);
+                break;
+            }
+            case 0x50: { //REDMULE_MCFG1_PTR
+                _this->n_size=value & 0xFFFF;
+                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] Set N size %d)\n", _this->n_size);
+                break;
+            }
+            case 0x54: {
+                _this->compute_able = _this->op_foramt_parser((value == 0x480)? 9:0); //the marith mapping between reg-if and offload-if is different... WHY?
+                _this->elem_size = (_this->compute_able < 4)? 2:1;
+                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] marith 0x%x, compute_able 0x%x, elem_size %d)\n", value,_this->compute_able,_this->elem_size);
+                break;
+            }
             default:
                 _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] write to INVALID address\n");
         }
     }
-
+    else {
+        switch (offset) {
+            case 0x00:
+                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] read to INVALID address\n");
+                break;
+            case 0x0C: {
+                int32_t done_id_r;
+                if ((_this->redmule_query == NULL) && (_this->state.get() == IDLE)) {
+                    done_id_r =  0x00;
+                    memcpy((void *)data, (void *)&done_id_r, size);
+                }
+                else {
+                    done_id_r =  0x01;
+                    memcpy((void *)data, (void *)&done_id_r, size);
+                }
+                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] read status reg 0x%x\n",done_id_r);
+                break;
+            }
+            default:
+                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] read to INVALID address\n");
+        }
+    }
     return vp::IO_REQ_OK;
 }
+
+    // if ((is_write == 0) && (offset == 32) && (_this->redmule_query == NULL) && (_this->state.get() == IDLE))
+    // {
+    //     /************************
+    //     *  Synchronize Trigger  *
+    //     ************************/
+    //     //Sanity Check
+    //     _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] redmule configuration (M-N-K): %d, %d, %d\n", _this->m_size, _this->n_size, _this->k_size);
+    //     if ((_this->m_size == 0)||(_this->n_size == 0)||(_this->k_size == 0))
+    //     {
+    //         _this->trace.fatal("[LightRedmule] INVALID redmule configuration (M-N-K): %d, %d, %d\n", _this->m_size, _this->n_size, _this->k_size);
+    //         return vp::IO_REQ_OK;
+    //     }
+
+    //     //Initilaize redmule meta data
+    //     _this->init_redmule_meta_data();
+
+    //     //Trigger FSM
+    //     _this->state.set(PRELOAD);
+    //     _this->tcdm_block_total = _this->get_preload_access_block_number();
+    //     _this->fsm_counter      = 0;
+    //     _this->fsm_timestamp    = 0;
+    //     _this->timer_start      = _this->time.get_time();
+    //     _this->cycle_start      = _this->clock.get_cycles();
+    //     _this->compute_able     = 0;
+    //     _this->event_enqueue(_this->fsm_event, 1);
+
+    //     //Save Query
+    //     _this->redmule_query = req;
+    //     return vp::IO_REQ_PENDING;
+
+    // } else if ((is_write == 0) && (offset == 36) && (_this->state.get() == IDLE)){
+    //     /*************************
+    //     *  Asynchronize Trigger  *
+    //     *************************/
+    //     //Sanity Check
+    //     _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] redmule configuration (M-N-K): %d, %d, %d\n", _this->m_size, _this->n_size, _this->k_size);
+    //     if ((_this->m_size == 0)||(_this->n_size == 0)||(_this->k_size == 0))
+    //     {
+    //         _this->trace.fatal("[LightRedmule] INVALID redmule configuration (M-N-K): %d, %d, %d\n", _this->m_size, _this->n_size, _this->k_size);
+    //         return vp::IO_REQ_OK;
+    //     }
+
+    //     //Initilaize redmule meta data
+    //     _this->init_redmule_meta_data();
+
+    //     //Trigger FSM
+    //     _this->state.set(PRELOAD);
+    //     _this->tcdm_block_total = _this->get_preload_access_block_number();
+    //     _this->fsm_counter      = 0;
+    //     _this->fsm_timestamp    = 0;
+    //     _this->timer_start      = _this->time.get_time();
+    //     _this->cycle_start      = _this->clock.get_cycles();
+    //     _this->compute_able     = 0;
+    //     _this->event_enqueue(_this->fsm_event, 1);
+
+    // } else if ((is_write == 0) && (offset == 40) && (_this->redmule_query == NULL) && (_this->state.get() != IDLE)){
+    //     /*************************
+    //     *  Asynchronize Waiting  *
+    //     *************************/
+    //     _this->redmule_query = req;
+    //     return vp::IO_REQ_PENDING;
 
 vp::IoReqStatus LightRedmule::send_tcdm_req()
 {

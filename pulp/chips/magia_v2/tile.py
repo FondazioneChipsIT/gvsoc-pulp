@@ -16,6 +16,7 @@
 
 # Authors: Lorenzo Zuolo, Chips-IT (lorenzo.zuolo@chips.it)
 
+import json
 import gvsoc.systree
 import memory.memory as memory
 import interco.router as router
@@ -91,6 +92,34 @@ class MagiaTileTcdm(gvsoc.systree.Component):
 
 
 class MagiaV2Tile(gvsoc.systree.Component):
+    def ev_unit_config(self):
+        event_unit_json = {
+            "event_unit": {
+                "version": "4",
+                "mapping": {
+                    "base": MagiaArch.EVENT_UNIT_ADDR_START,
+                    "size": MagiaArch.EVENT_UNIT_SIZE,
+                    "remove_offset": MagiaArch.EVENT_UNIT_ADDR_START
+                },
+                "config": {
+                    "nb_core": 1,
+                    "properties": {
+                        "dispatch": {"size": 8},
+                        "mutex": {"nb_mutexes": 0},
+                        "barriers": {"nb_barriers": 0},
+                        "soc_event": {"nb_fifo_events": 8, "fifo_event": 8},
+                        "events": {
+                            "dispatch": 8,
+                            "mutex": 0,
+                            "barrier": 0
+                        }
+                    }
+                }
+            }
+        }
+        json_data = json.dumps(event_unit_json)
+        return json.loads(json_data)
+
     def __init__(self, parent, name, parser, tid: int=0):
         super().__init__(parent, name)
         
@@ -129,7 +158,7 @@ class MagiaV2Tile(gvsoc.systree.Component):
         fsync_mm_ctrl = FSync_mm_ctrl(self,f'tile-{tid}-fs-ctrl-mm')
 
         # Event Unit
-        self.add_properties(self.load_property_file('/home/gvsoc/Documents/gvsoc/pulp/pulp/chips/magia_v2/event_unit.json'))
+        self.add_properties(self.ev_unit_config())
         event_unit = Event_unit(self, f'tile-{tid}-event-unit', self.get_property('event_unit/config'))
 
         # UART
@@ -245,8 +274,8 @@ class MagiaV2Tile(gvsoc.systree.Component):
         self.bind(event_unit, 'irq_req_0', core_cv32, 'irq_req')
         self.bind(idma_mm_ctrl, 'idma0_done_irq', event_unit, 'in_event_2_pe_0')
         self.bind(idma_mm_ctrl, 'idma1_done_irq', event_unit, 'in_event_3_pe_0')
+        self.bind(redmule, 'done_irq', event_unit, 'in_event_10_pe_0')
         self.bind(fsync_mm_ctrl, 'fsync_done_irq', event_unit, 'in_event_24_pe_0')
-        self.bind(redmule, 'done_irq', event_unit, 'in_event_31_pe_0')
 
         # Bind fractal sync ports
         fsync_mm_ctrl.o_XIF_2_FRACTAL_EAST_WEST(self.__o_SLAVE_EAST_WEST_FRACTAL())
