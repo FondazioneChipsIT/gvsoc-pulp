@@ -1085,7 +1085,7 @@ void LightRedmule::fsm_handler(vp::Block *__this, vp::ClockEvent *event)
             while((_this->pending_req_queue.size()!= 0) && (_this->pending_req_queue.front() <= _this->fsm_timestamp)){
                 _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][Preload] ---                           Receive TCDM resp\n");
                 // printf("[Preload] ");
-                // for (int i=0;i<128;i=i+2) {
+                // for (int i=0;i<_this->tcdm_req->get_size();i=i+2) {
                 //     printf("0x%02x%02x, ",_this->access_buffer[i+1],_this->access_buffer[i]);
                 // }
                 // printf("\n");
@@ -1159,7 +1159,7 @@ void LightRedmule::fsm_handler(vp::Block *__this, vp::ClockEvent *event)
             while((_this->pending_req_queue.size()!= 0) && (_this->pending_req_queue.front() <= _this->fsm_timestamp) ){
                 _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][ROUTINE-ijk: %0d-%0d-%0d] ---                           Receive TCDM resp\n", _this->iter_i, _this->iter_j, _this->iter_k);
                 // printf("[ROUTINE] ");
-                // for (int i=0;i<128;i=i+2) {
+                // for (int i=0;i<_this->tcdm_req->get_size();i=i+2) {
                 //     printf("0x%02x%02x, ",_this->access_buffer[i+1],_this->access_buffer[i]);
                 // }
                 // printf("\n");
@@ -1251,7 +1251,7 @@ void LightRedmule::fsm_handler(vp::Block *__this, vp::ClockEvent *event)
             while((_this->pending_req_queue.size()!= 0) && (_this->pending_req_queue.front() <= _this->fsm_timestamp) ){
                 _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][Storing] ---                           Receive TCDM resp\n");
                 // printf("[Storing] ");
-                // for (int i=0;i<128;i=i+2) {
+                // for (int i=0;i<_this->tcdm_req->get_size();i=i+2) {
                 //     printf("0x%02x%02x, ",_this->access_buffer[i+1],_this->access_buffer[i]);
                 // }
                 // printf("\n");
