@@ -24,3 +24,4 @@
 
  #include <cpu/iss/include/isa/rvXf16.hpp>
  #include <cpu/iss/include/isa/rvXf16alt.hpp>
+ #include <cpu/iss/include/isa/pulp_v2.hpp>
