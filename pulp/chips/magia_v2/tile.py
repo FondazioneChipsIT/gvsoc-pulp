@@ -47,12 +47,12 @@ class MagiaTileTcdm(gvsoc.systree.Component):
         nb_banks = MagiaArch.N_MEM_BANKS
         bank_size = MagiaArch.N_WORDS_BANK * MagiaArch.BYTES_PER_WORD
 
-        # 1 master: OBI, iDMA0, iDMA1
-        L1_masters = 3
+        # 1 master: OBI
+        L1_masters = 1
         interleaver = L1_interleaver(self, 'interleaver', nb_slaves=nb_banks, nb_masters=L1_masters, interleaving_bits=2)
 
-        # 3 masters: OBI
-        dma_masters = 1
+        # 3 masters: OBI, iDMA0, iDMA1
+        dma_masters = 3
         dma_interleaver = DmaInterleaver(self, 'dma_interleaver', nb_master_ports=dma_masters, nb_banks=nb_banks, bank_width=4)
         
         # 1 master: redmule
@@ -255,13 +255,13 @@ class MagiaV2Tile(gvsoc.systree.Component):
 
         # Bind: idma0
         idma0.o_AXI(tile_xbar.i_INPUT())
-        idma0.o_TCDM(l1_tcdm.i_INPUT(1)) #here we don't use the iDMA interleaver because here iDMA is directly connected to TCDM and iDMA has it's own interleaver for TCDM access (in iDMA-BE)
+        idma0.o_TCDM(l1_tcdm.i_DMA_INPUT())
         idma_mm_ctrl.o_OFFLOAD_iDMA0_AXI2OBI(idma0.i_OFFLOAD())
         idma0.o_OFFLOAD_GRANT(idma_mm_ctrl.i_OFFLOAD_GRANT_iDMA0_AXI2OBI())
 
         # Bind: idma1
         idma1.o_AXI(tile_xbar.i_INPUT())
-        idma1.o_TCDM(l1_tcdm.i_INPUT(2)) #here we don't use the iDMA interleaver because here iDMA is directly connected to TCDM and iDMA has it's own interleaver for TCDM access (in iDMA-BE)
+        idma1.o_TCDM(l1_tcdm.i_DMA_INPUT())
         idma_mm_ctrl.o_OFFLOAD_iDMA1_OBI2AXI(idma1.i_OFFLOAD())
         idma1.o_OFFLOAD_GRANT(idma_mm_ctrl.i_OFFLOAD_GRANT_iDMA1_OBI2AXI())
 
