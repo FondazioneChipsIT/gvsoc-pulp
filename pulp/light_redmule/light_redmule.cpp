@@ -1099,11 +1099,13 @@ void LightRedmule::fsm_handler(vp::Block *__this, vp::ClockEvent *event)
             //Recieve Process
             while((_this->pending_req_queue.size()!= 0) && (_this->pending_req_queue.front() <= _this->fsm_timestamp)){
                 _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][Preload] ---                           Receive TCDM resp\n");
-                // printf("[Preload] ");
-                // for (int i=0;i<_this->tcdm_req->get_size();i=i+2) {
-                //     printf("0x%02x%02x, ",_this->access_buffer[i+1],_this->access_buffer[i]);
+                // std::string out;
+                // for (int i = 0; i < _this->tcdm_req->get_size(); i += 2) {
+                //     char tmp[16];
+                //     snprintf(tmp, sizeof(tmp), "0x%02x%02x, ", _this->access_buffer[i + 1], _this->access_buffer[i]);
+                //     out += tmp;
                 // }
-                // printf("\n");
+                // _this->trace.msg(vp::Trace::LEVEL_TRACE,"%s\n", out.c_str());
                 _this->pending_req_queue.pop();
             }
 
@@ -1173,11 +1175,13 @@ void LightRedmule::fsm_handler(vp::Block *__this, vp::ClockEvent *event)
             //Recieve Process
             while((_this->pending_req_queue.size()!= 0) && (_this->pending_req_queue.front() <= _this->fsm_timestamp) ){
                 _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][ROUTINE-ijk: %0d-%0d-%0d] ---                           Receive TCDM resp\n", _this->iter_i, _this->iter_j, _this->iter_k);
-                // printf("[ROUTINE] ");
-                // for (int i=0;i<_this->tcdm_req->get_size();i=i+2) {
-                //     printf("0x%02x%02x, ",_this->access_buffer[i+1],_this->access_buffer[i]);
+                // std::string out;
+                // for (int i = 0; i < _this->tcdm_req->get_size(); i += 2) {
+                //     char tmp[16];
+                //     snprintf(tmp, sizeof(tmp), "0x%02x%02x, ", _this->access_buffer[i + 1], _this->access_buffer[i]);
+                //     out += tmp;
                 // }
-                // printf("\n");
+                // _this->trace.msg(vp::Trace::LEVEL_TRACE,"%s\n", out.c_str());
                 _this->pending_req_queue.pop();
             }
 
@@ -1265,13 +1269,13 @@ void LightRedmule::fsm_handler(vp::Block *__this, vp::ClockEvent *event)
             //Recieve Process
             while((_this->pending_req_queue.size()!= 0) && (_this->pending_req_queue.front() <= _this->fsm_timestamp) ){
                 _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][Storing] ---                           Receive TCDM resp\n");
-                std::string out;
-                for (int i = 0; i < _this->tcdm_req->get_size(); i += 2) {
-                    char tmp[16];
-                    snprintf(tmp, sizeof(tmp), "0x%02x%02x, ", _this->access_buffer[i + 1], _this->access_buffer[i]);
-                    out += tmp;
-                }
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"%s\n", out.c_str());
+                // std::string out;
+                // for (int i = 0; i < _this->tcdm_req->get_size(); i += 2) {
+                //     char tmp[16];
+                //     snprintf(tmp, sizeof(tmp), "0x%02x%02x, ", _this->access_buffer[i + 1], _this->access_buffer[i]);
+                //     out += tmp;
+                // }
+                // _this->trace.msg(vp::Trace::LEVEL_TRACE,"%s\n", out.c_str());
                 _this->pending_req_queue.pop();
             }
 
@@ -1709,7 +1713,7 @@ void LightRedmule::matmul_fp16(fp16 * z, fp16 * y, fp16 * x, fp16 * w, uint16_t 
                 //                                                                     y[i * k_size + j]);
                 z[i * k_size + j] = fp16_fma(x[i * n_size + k], w[k * k_size + j], z[i * k_size + j]);
             }
-            this->trace.msg(vp::Trace::LEVEL_TRACE,"z[%d]=0x%4x\n",i * k_size + j, z[i * k_size + j]);
+            //this->trace.msg(vp::Trace::LEVEL_TRACE,"z[%d]=0x%4x\n",i * k_size + j, z[i * k_size + j]);
         }
     }
 }

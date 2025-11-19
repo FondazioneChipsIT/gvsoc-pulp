@@ -146,8 +146,8 @@ class MagiaV2Tile(gvsoc.systree.Component):
         # Redmule
         redmule = LightRedmule(self, f'tile-{tid}-redmule',
                                     tcdm_bank_width     = MagiaArch.BYTES_PER_WORD,
-                                    tcdm_bank_number    = MagiaArch.N_MEM_BANKS,
-                                    elem_size           = 2, #max number of bytes per element --> if FP16 then elem_size=2. This is the max number to accomodate any supported format which for now are 8bits and 16bits data types 
+                                    tcdm_bank_number    = 16,# here we set 16 since tcdm_bank_width x tcdm_bank_number --> 16 x 4 = 64bytes, i.e., 512 bits. Please do not consider tcdm_bank_width and tcdm_bank_number as the boundaries of the TCDM, but rather the size of the port towards it. 
+                                    elem_size           = 2, # max number of bytes per element --> if FP16 then elem_size=2. This is the max number to accomodate any supported format which for now are 8bits and 16bits data types 
                                     ce_height           = 8,
                                     ce_width            = 8,
                                     ce_pipe             = 1,
