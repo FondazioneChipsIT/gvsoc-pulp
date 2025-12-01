@@ -116,6 +116,9 @@ protected:
     vp::reg_32 dst_stride_3_reg_dma0;
     vp::reg_32 reps3_reg_dma0;
 
+    uint64_t dma0_transfer_time_start;
+    uint64_t dma0_transfer_time_stop;
+
     //DMA1 registers and ports
     vp::WireMaster<bool> done_dma1;
     
@@ -135,6 +138,9 @@ protected:
     vp::reg_32 src_stride_3_reg_dma1;
     vp::reg_32 dst_stride_3_reg_dma1;
     vp::reg_32 reps3_reg_dma1;
+
+    uint64_t dma1_transfer_time_start;
+    uint64_t dma1_transfer_time_stop;
 
     vp::Trace trace;
 };
@@ -181,6 +187,9 @@ iDMA_mm_ctrl::iDMA_mm_ctrl(vp::ComponentConf &config)
     this->dst_stride_3_reg_dma0.set(0x00000000);
     this->reps3_reg_dma0.set(0x00000000);
 
+    this->dma0_transfer_time_start=0;
+    this->dma0_transfer_time_stop=0;
+
     //Initialize FSMs and Regs for iDMA1
     this->fsm_state_dma1.set(IDLE);
 
@@ -195,6 +204,9 @@ iDMA_mm_ctrl::iDMA_mm_ctrl(vp::ComponentConf &config)
     this->dst_stride_3_reg_dma1.set(0x00000000);
     this->reps3_reg_dma1.set(0x00000000);
 
+    this->dma1_transfer_time_start=0;
+    this->dma1_transfer_time_stop=0;
+
     this->trace.msg(vp::Trace::LEVEL_TRACE,"[Magia iDMA Ctrl] Instantiated\n");
 
 }
@@ -206,8 +218,9 @@ void iDMA_mm_ctrl::fsm_handler_dma0(vp::Block *__this, vp::ClockEvent *event) {
 
     switch (_this->fsm_state_dma0.get()) {
         case IDLE:
-        {    
-            _this->trace.msg(vp::Trace::LEVEL_TRACE,"[Magia iDMA Ctrl] DMA0 In IDLE\n");
+        {   
+            _this->dma0_transfer_time_stop=_this->clock.get_cycles(); 
+            _this->trace.msg(vp::Trace::LEVEL_TRACE,"[Magia iDMA Ctrl] DMA0 In IDLE. Transfer cycles are %ld\n",_this->dma0_transfer_time_stop-_this->dma0_transfer_time_start);
             _this->done_dma0.sync(false); //clear interrupt
             break;
         }
@@ -247,7 +260,8 @@ void iDMA_mm_ctrl::fsm_handler_dma1(vp::Block *__this, vp::ClockEvent *event) {
     switch (_this->fsm_state_dma1.get()) {
         case IDLE:
         {    
-            _this->trace.msg(vp::Trace::LEVEL_TRACE,"[Magia iDMA Ctrl] DMA1 In IDLE\n");
+            _this->dma1_transfer_time_stop=_this->clock.get_cycles();
+            _this->trace.msg(vp::Trace::LEVEL_TRACE,"[Magia iDMA Ctrl] DMA1 In IDLE. Transfer cycles are %ld\n",_this->dma1_transfer_time_stop-_this->dma1_transfer_time_start);
             _this->done_dma1.sync(false); //clear interrupt
             break;
         }
@@ -334,6 +348,7 @@ vp::IoReqStatus iDMA_mm_ctrl::req(vp::Block *__this, vp::IoReq *req)
                 }
                 else {
                     _this->trace.msg("[Magia iDMA Ctrl] IDMA1 Reading IDMA_NEXT_ID_OFFSET=0x%08x\n",next_id_r);
+                    _this->dma1_transfer_time_start=_this->clock.get_cycles();
                     IssOffloadInsn<uint32_t> dmsrc; 
                     IssOffloadInsn<uint32_t> dmdst;
                     IssOffloadInsn<uint32_t> dmrep;
@@ -546,6 +561,7 @@ vp::IoReqStatus iDMA_mm_ctrl::req(vp::Block *__this, vp::IoReq *req)
                 }
                 else {
                     _this->trace.msg("[Magia iDMA Ctrl] IDMA0 Reading IDMA_NEXT_ID_OFFSET=0x%08x\n",next_id_r);
+                    _this->dma0_transfer_time_start=_this->clock.get_cycles();
                     IssOffloadInsn<uint32_t> dmsrc; 
                     IssOffloadInsn<uint32_t> dmdst;
                     IssOffloadInsn<uint32_t> dmrep;

@@ -23,7 +23,7 @@ import utils.loader.loader
 import interco.router as router
 
 from pulp.chips.magia_v2.tile import MagiaV2Tile
-from pulp.chips.magia_v2.arch import MagiaArch
+from pulp.chips.magia_v2.arch import *
 from pulp.floonoc.floonoc import *
 from pulp.chips.magia_v2.fractal_sync.fractal_sync import *
 from pulp.chips.magia_v2.kill_module.kill_module import *
@@ -68,7 +68,7 @@ class MagiaV2Soc(gvsoc.systree.Component):
         for id in range(0,MagiaArch.NB_CLUSTERS):
             cluster.append(MagiaV2Tile(self, f'magia-tile-{id}', parser, id))
 
-        l2_mem = memory.Memory(self, f'L2-mem', size=MagiaArch.L2_SIZE,latency=1)
+        l2_mem = memory.Memory(self, f'L2-mem', size=MagiaArch.L2_SIZE,latency=MagiaDSE.SOC_L2_LATENCY)
 
         # Create Tile matrix for IDs
         # --------------> X direction
@@ -143,7 +143,7 @@ class MagiaV2Soc(gvsoc.systree.Component):
         noc = FlooNoc2dMeshNarrowWide(self,
                                     name='magia-noc',
                                     narrow_width=4,
-                                    wide_width=4,
+                                    wide_width=32,
                                     ni_outstanding_reqs=8, #need to double check this with RTL
                                     router_input_queue_size=4, #need to double check this with RTL
                                     dim_x=MagiaArch.N_TILES_X+1, dim_y=MagiaArch.N_TILES_Y)
@@ -179,7 +179,11 @@ class MagiaV2Soc(gvsoc.systree.Component):
                 print(f"[NoC] Adding cluster {id} at position x={x} y={y}")
                 cluster[id].o_KILLER_OUTPUT(killer.i_INPUT())
                 cluster[id].o_NARROW_OUTPUT(noc.i_NARROW_INPUT(x,y))
-                noc.o_NARROW_MAP(cluster[id].i_NARROW_INPUT(),name=f'tile-{id}-l1-mem',base=MagiaArch.L1_ADDR_START+(id*MagiaArch.L1_TILE_OFFSET),size=MagiaArch.L1_SIZE,x=x,y=y,rm_base=False)
+                if not MagiaArch.USE_NARROW_WIDE:
+                    noc.o_NARROW_MAP(cluster[id].i_NARROW_INPUT(),name=f'tile-{id}-l1-mem',base=MagiaArch.L1_ADDR_START+(id*MagiaArch.L1_TILE_OFFSET),size=MagiaArch.L1_SIZE,x=x,y=y,rm_base=False)
+                else:
+                    cluster[id].o_WIDE_OUTPUT(noc.i_WIDE_INPUT(x,y))
+                    noc.o_WIDE_MAP(cluster[id].i_WIDE_INPUT(),name=f'tile-{id}-l1-mem',base=MagiaArch.L1_ADDR_START+(id*MagiaArch.L1_TILE_OFFSET),size=MagiaArch.L1_SIZE,x=x,y=y,rm_base=False,remove_offset=(id*MagiaArch.L1_TILE_OFFSET))
                 id += 1
 
         # Bind memory to noc
@@ -197,8 +201,9 @@ class MagiaV2Soc(gvsoc.systree.Component):
 
         for y in range(0,MagiaArch.N_TILES_Y):
             print(f"[NoC] Adding L2 at position x={0} y={y}")
-            #noc.o_NARROW_MAP(l2_mem.i_INPUT(),name=f'l2-map-{y}',base=MagiaArch.L2_ADDR_START,size=MagiaArch.L2_SIZE,x=0,y=y,rm_base=True)
             noc.o_NARROW_BIND(l2_mem.i_INPUT(), x=0, y=y)
+            if MagiaArch.USE_NARROW_WIDE:
+                noc.o_WIDE_BIND(l2_mem.i_INPUT(), x=0, y=y)
         
         noc.o_MAP_DIR(base=MagiaArch.L2_ADDR_START,size=MagiaArch.L2_SIZE, dir=FlooNocDirection.LEFT,name=f'mem_left', rm_base=True)
 
