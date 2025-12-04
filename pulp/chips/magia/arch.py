@@ -45,18 +45,20 @@ class MagiaArch:
     BYTES_PER_WORD      = 4
     TILE_CLK_FREQ       = 200 * (10 ** 6)
 
-    N_TILES_X           = 4
-    N_TILES_Y           = 4
+    N_TILES_X           = 8
+    N_TILES_Y           = 8
     NB_CLUSTERS         = N_TILES_X*N_TILES_Y
 
 
 class MagiaDSE:
-    SOC_L2_LATENCY          = 0
-    TILE_AXI_XBAR_LATENCY   = 2
-    TILE_AXI_XBAR_SYNC      = False
-    TILE_OBI_XBAR_LATENCY   = 2
-    TILE_OBI_XBAR_SYNC      = True
-    TILE_IDMA0_BQUEUE_SIZE  = 1
-    TILE_IDMA0_B_SIZE       = 8
-    TILE_IDMA1_BQUEUE_SIZE  = 2
-    TILE_IDMA1_B_SIZE       = 4
+    SOC_L2_LATENCY              = 2
+    TILE_ICACHE_REFILL_LATENCY  = 2
+    TILE_TCDM_LATENCY           = 1
+    TILE_AXI_XBAR_LATENCY       = 2
+    TILE_AXI_XBAR_SYNC          = False
+    TILE_OBI_XBAR_LATENCY       = 2
+    TILE_OBI_XBAR_SYNC          = True
+    TILE_IDMA0_BQUEUE_SIZE      = 2
+    TILE_IDMA0_B_SIZE           = 4
+    TILE_IDMA1_BQUEUE_SIZE      = 2
+    TILE_IDMA1_B_SIZE           = 8
