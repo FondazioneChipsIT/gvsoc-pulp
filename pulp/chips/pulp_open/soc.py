@@ -50,14 +50,14 @@ class SocAttr(Tree):
 
 class SocConf(st.Component):
     def __init__(self, property_file):
-        super(SocConf, self).__init__(parent=None, name=None)
+        super(SocConf, self).__init__(parent=None, name='')
 
         self.add_properties(self.load_property_file(property_file))
 
 
 class Soc(st.Component):
 
-    def __init__(self, parent, name, attr: SocAttr, parser, config_file, chip, cluster):
+    def __init__(self, parent, name, attr: SocAttr, parser, config_file, chip, cluster, pim_support=False, pulpnn=False):
         super(Soc, self).__init__(parent, name)
 
         #
@@ -104,7 +104,7 @@ class Soc(st.Component):
         fll_cluster = Fll(self, 'fll_cluster')
 
         # FC
-        fc = iss.FcCore(self, 'fc')
+        fc = iss.FcCore(self, 'fc', pulpnn=pulpnn)
 
         # FC ITC
         fc_itc = itc.Itc_v1(self, 'fc_itc')
@@ -265,8 +265,11 @@ class Soc(st.Component):
         self.bind(soc_ico, 'axi_proxy', axi_ico, 'input')
         self.bind(soc_ico, 'ddr', axi_ico, 'input')
 
-        axi_ico.add_mapping('ddr', base=0x80000000, size=0x00100000, remove_offset=0x80000000)
+        axi_ico.add_mapping('ddr', base=0x80000000, size=0x40000000, remove_offset=0x80000000)  #TODO Pretty sure addresses above 0xC0000000 are either used or non usable
         self.bind(axi_ico, 'ddr', self, 'ddr')
+        if pim_support: 
+            axi_ico.add_mapping('pim_toggle', base=0xC0000000, size=0x00000004, remove_offset=0x80000000)
+            self.bind(axi_ico, 'pim_toggle', self, 'pim_toggle')
 
         self.bind(axi_ico, 'soc', soc_ico, 'axi_slave')
         self.bind(self, 'soc_input', axi_ico, 'input')

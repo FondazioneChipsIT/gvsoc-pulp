@@ -21,7 +21,6 @@ class Target(gvsoc.runner.Target):
 
     gapy_description="Magia board"
     model = MagiaBoard
-    name = "magia"
 
     def __init__(self, parser, options=None, name=None):
 

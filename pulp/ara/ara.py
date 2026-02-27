@@ -22,13 +22,29 @@ def extend_isa(isa_instance):
     # For now only load/stores are assigned to vlsu
     vle_pattern = re.compile(r'^(vle\d+\.v)$')
     vse_pattern = re.compile(r'^(vse\d+\.v)$')
+    vlse_pattern = re.compile(r'^(vlse\d+\.v)$')
+    vsse_pattern = re.compile(r'^(vsse\d+\.v)$')
+    vlux_pattern = re.compile(r'^(vluxei\d+\.v)$')
+    vsux_pattern = re.compile(r'^(vsuxei\d+\.v)$')
+    vlox_pattern = re.compile(r'^(vloxei\d+\.v)$')
+    vsox_pattern = re.compile(r'^(vsoxei\d+\.v)$')
     vslide_pattern = re.compile(r'.*slide.*|.*vmv.*')
     vsetvli_pattern = re.compile(r'.*vset.*')
     for insn in isa_instance.get_isa('v').get_insns():
-        if vle_pattern.match(insn.label) is not None:
+        if vle_pattern.match(insn.label) is not None or vlse_pattern.match(insn.label) is not None or \
+                vlux_pattern.match(insn.label) is not None or vlox_pattern.match(insn.label) is not None:
             insn.add_tag('vload')
-        elif vse_pattern.match(insn.label) is not None:
+            if vlse_pattern.match(insn.label) is not None:
+                insn.add_tag('vload_strided')
+            if vlux_pattern.match(insn.label) is not None or vlox_pattern.match(insn.label) is not None:
+                insn.add_tag('vload_indexed')
+        elif vse_pattern.match(insn.label) is not None or vsse_pattern.match(insn.label) is not None or \
+                vsux_pattern.match(insn.label) is not None or vsox_pattern.match(insn.label) is not None:
             insn.add_tag('vstore')
+            if vsse_pattern.match(insn.label) is not None:
+                insn.add_tag('vstore_strided')
+            if vsux_pattern.match(insn.label) is not None or vsox_pattern.match(insn.label) is not None:
+                insn.add_tag('vstore_indexed')
         elif vslide_pattern.match(insn.label) is not None:
             insn.add_tag('vslide')
         elif vsetvli_pattern.match(insn.label) is not None:
@@ -36,7 +52,11 @@ def extend_isa(isa_instance):
         else:
             insn.add_tag('vothers')
 
-def attach(component, vlen, nb_lanes, use_spatz=False, spatz_nb_ports=None, vector_chaining=False):
+        # Vector instructions can be given latencies like that
+        # if insn.label.find('vfmac') == 0:
+        #     insn.set_latency(1)
+
+def attach(component, vlen, nb_lanes, use_spatz=False, spatz_nb_ports=None, lane_width=8):
     component.add_sources([
         "cpu/iss/src/ara/ara.cpp",
         "cpu/iss/src/ara/ara_vcompute.cpp",
@@ -60,6 +80,8 @@ def attach(component, vlen, nb_lanes, use_spatz=False, spatz_nb_ports=None, vect
     ])
 
     component.add_property('ara/nb_lanes', nb_lanes)
+    component.add_property('ara/lsu_width', lane_width)
+    component.add_property('ara/compute_width', lane_width)
     if use_spatz:
         component.add_property('ara/nb_ports', nb_lanes if spatz_nb_ports is None else spatz_nb_ports)
         component.add_property('ara/nb_outstanding_reqs', 8)

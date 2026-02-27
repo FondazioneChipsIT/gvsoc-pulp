@@ -16,6 +16,8 @@
 
 # Authors: Lorenzo Zuolo, Chips-IT (lorenzo.zuolo@chips.it)
 
+from gvrun.attribute import Tree, Value
+
 class MagiaArch:
     # Single tile address map from magia_tile_pkg.sv
     REDMULE_CTRL_ADDR_START = 0x0000_0100
@@ -30,8 +32,11 @@ class MagiaArch:
     EVENT_UNIT_ADDR_START   = FSYNC_CTRL_ADDR_END + 1
     EVENT_UNIT_SIZE         = 0x0000_0FFF
     EVENT_UNIT_ADDR_END     = EVENT_UNIT_ADDR_START + EVENT_UNIT_SIZE
-    RESERVED_ADDR_START     = EVENT_UNIT_ADDR_END + 1
-    RESERVED_SIZE           = 0x0000_E8FF
+    SPATZ_CTRL_START        = EVENT_UNIT_ADDR_END + 1
+    SPATZ_CTRL_SIZE         = 0x0000_00FF
+    SPATZ_CTRL_END          = SPATZ_CTRL_START + SPATZ_CTRL_SIZE
+    RESERVED_ADDR_START     = SPATZ_CTRL_END + 1
+    RESERVED_SIZE           = 0x0000_E7FF
     RESERVED_ADDR_END       = RESERVED_ADDR_START + RESERVED_SIZE
     STACK_ADDR_START        = RESERVED_ADDR_END + 1
     STACK_SIZE              = 0x0000_FFFF
@@ -41,13 +46,17 @@ class MagiaArch:
     L1_ADDR_END             = L1_ADDR_START + L1_SIZE
     L1_TILE_OFFSET          = 0x0010_0000
     L2_ADDR_START           = 0xC000_0000
-    #L2_SIZE                = 0x4000_0000
-    L2_SIZE                 = 0x0C02_FFFF
+    L2_SIZE                 = 0x0CFE_FFFF # here in RTL we have 0x4000_0000 but the end address (TEST_END_ADDR_START) then will fall in L2... no sense to me
     L2_ADDR_END             = L2_ADDR_START + L2_SIZE
     TEST_END_ADDR_START     = L2_ADDR_END + 1
     TEST_END_SIZE           = 0x400
     STDOUT_ADDR_START       = 0xFFFF_0004
     STDOUT_SIZE             = 0x100
+
+    # Snitch_Spatz
+    SPATZ_BOOTROM_ADDR         = 0x1000_0000
+    SPATZ_BOOTROM_SIZE         = 0x100
+    SPATZ_ROMFILE              = 'pulp/snitch/bootrom_spatz.bin'
 
     # From magia_pkg.sv
     N_MEM_BANKS         = 32        # Number of TCDM banks
@@ -59,17 +68,36 @@ class MagiaArch:
 
     N_TILES_X           = 4
     N_TILES_Y           = 4
-    NB_CLUSTERS         = N_TILES_X*N_TILES_Y
 
     USE_NARROW_WIDE     = False
 
+class MagiaTree(Tree):
+    def __init__(self, parent, name):
+        super().__init__(parent, name)
+        self.n_tiles_x = Value(self, 'n_tiles_x', MagiaArch.N_TILES_X, cast=int,
+            description='Number of tiles on X dimension')
+        self.n_tiles_y = Value(self, 'n_tiles_y', MagiaArch.N_TILES_Y, cast=int,
+            description='Number of tiles on Y dimension')
+
+        self.nb_clusters = self.n_tiles_x*self.n_tiles_y
+
+        self.romfile = Value(self, 'spatz_romfile', MagiaArch.SPATZ_ROMFILE, cast=str,
+            description='Snitch_Spatz rom file')
+        
+        if len(self.romfile) == 0:
+            self.enable_spatz = False
+        else: 
+            self.enable_spatz = True
+
 class MagiaDSE:
-    SOC_L2_LATENCY          = 0
-    TILE_AXI_XBAR_LATENCY   = 2
-    TILE_AXI_XBAR_SYNC      = False
-    TILE_OBI_XBAR_LATENCY   = 2
-    TILE_OBI_XBAR_SYNC      = True
-    TILE_IDMA0_BQUEUE_SIZE  = 1
-    TILE_IDMA0_B_SIZE       = 8
-    TILE_IDMA1_BQUEUE_SIZE  = 2
-    TILE_IDMA1_B_SIZE       = 4
+    SOC_L2_LATENCY              = 2
+    TILE_ICACHE_REFILL_LATENCY  = 2
+    TILE_TCDM_LATENCY           = 1
+    TILE_AXI_XBAR_LATENCY       = 2
+    TILE_AXI_XBAR_SYNC          = False
+    TILE_OBI_XBAR_LATENCY       = 2
+    TILE_OBI_XBAR_SYNC          = True
+    TILE_IDMA0_BQUEUE_SIZE      = 2
+    TILE_IDMA0_B_SIZE           = 4
+    TILE_IDMA1_BQUEUE_SIZE      = 2
+    TILE_IDMA1_B_SIZE           = 8
