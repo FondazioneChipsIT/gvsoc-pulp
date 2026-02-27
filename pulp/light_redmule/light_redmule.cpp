@@ -1331,7 +1331,7 @@ void matmul_int16(int16_t * z, int16_t * y, int16_t * x, int16_t * w, uint16_t m
 // }
 
 // -----------------------------------------------------------------------------
-// Improved FP16 <-> FP32 conversion routines by Lorenzo Zuolo
+// Improved FP16 <-> FP64 conversion routines by Lorenzo Zuolo and Alex Marchioni
 //
 // These versions fix several numerical and IEEE-754 compliance issues found
 // in the original naive implementations. The original functions performed
@@ -1365,101 +1365,130 @@ void matmul_int16(int16_t * z, int16_t * y, int16_t * x, int16_t * w, uint16_t m
 // that accumulated across multiple conversions (like in FMA loops).
 // -----------------------------------------------------------------------------
 
-fp16 float_to_fp16(float f)
-{
-    uint32_t f_bits;
-    memcpy(&f_bits, &f, sizeof(f));
+uint16_t double_to_fp16(double d) {
+    uint64_t bits;
+    memcpy(&bits, &d, sizeof(bits)); 
 
-    uint32_t sign = (f_bits >> 16) & 0x8000u;
-    int32_t  exp  = ((f_bits >> 23) & 0xFF) - 127 + 15;
-    uint32_t mant = f_bits & 0x007FFFFFu;
+    uint16_t sign = (bits >> 63) & 0x1;
+    int64_t exp_d = (bits >> 52) & 0x7FF;
+    uint64_t frac_d = bits & 0x000FFFFFFFFFFFFFull; // 52 bits
 
-    if (exp <= 0) {
-        // Subnormal or zero
-        if (exp < -10) {
-            // Too small -> underflow to zero
-            return sign;
+    uint16_t exp_h, frac_h;
+
+    // Handle special cases
+    if (exp_d == 0x7FF) { // Inf or NaN
+        exp_h = 0x1F;
+        if (frac_d == 0) { // Infinity
+            frac_h = 0;
+        } else { // NaN: preserve quiet NaN bit
+            // Preserve top 10 bits of FP32 fraction for FP16
+            // Ensure quiet NaN (set MSB of frac_h)
+            frac_h = (uint16_t)((frac_d >> (52 - 10)) | 0x200);
         }
-        // Add implicit leading 1 and shift to create subnormal
-        mant = (mant | 0x00800000u) >> (1 - exp);
-        // Round-to-nearest-even
-        if (mant & 0x00001000u)
-            mant += 0x00002000u;
-        return sign | (mant >> 13);
-    } 
-    else if (exp >= 0x1F) {
-        // Overflow -> Inf or NaN
-        if ((f_bits & 0x7FFFFFu) != 0)
-            return sign | 0x7E00u; // NaN
-        return sign | 0x7C00u;     // +Inf / -Inf
+    } else if (exp_d == 0) { // Zero or subnormal in double → zero in half
+        // All double subnormals are mapped to FP16 zero.
+        // Some double subnormals might be large enough to become FP16 subnormals.
+        // This results in a small precision loss.
+        exp_h = 0;
+        frac_h = 0;
+    } else { // Normalized double
+        int32_t exp_unbiased = (int32_t)exp_d - 1023; // remove double bias
+        int32_t exp_half = exp_unbiased + 15;         // re-bias for half
+
+        if (exp_half >= 0x1F) { // Overflow → Infinity
+            exp_h = 0x1F;
+            frac_h = 0;
+        } else if (exp_half <= 0) { // Subnormal or underflow to zero
+            if (exp_half < -10) { // Too small → underflow to zero
+                exp_h = 0;
+                frac_h = 0;
+            } else {
+                // Subnormal number
+                uint64_t mant = (frac_d | 0x10000000000000ull); // add hidden bit 
+                uint8_t shift = 52 + (1 - exp_half) - 10; 
+                uint64_t frac = mant >> shift; 
+
+                // Round to nearest-even
+                uint64_t round_bit = (mant >> (shift - 1)) & 1; 
+                uint64_t rest = mant & ((1ull << (shift - 1)) - 1); 
+                if (round_bit && (rest || (frac & 1))) 
+                    frac++;
+
+                frac_h = (uint16_t)frac;
+                exp_h = 0;
+            }
+        } else {
+            // Normal half-precision number
+            uint64_t mant = frac_d;
+
+            // Extract top 10 bits and round
+            uint64_t frac = mant >> (52 - 10);
+            uint64_t round_bit = (mant >> (52 - 10 - 1)) & 1;
+            uint64_t rest = mant & ((1ull << (52 - 10 - 1)) - 1);
+
+            if (round_bit && (rest || (frac & 1)))
+                frac++;
+
+            if (frac == 0x400) { // mantissa overflow
+                frac = 0;
+                exp_half++;
+            }
+
+            if (exp_half >= 0x1F) {
+                // Overflow → Infinity
+                exp_h = 0x1F;
+                frac_h = 0;
+            } else {
+                exp_h = exp_half & 0x1F;
+                frac_h = (uint16_t)(frac & 0x3FF);
+            }
+        }
     }
 
-    // Normal number: add rounding before truncating
-    mant = mant + 0x00001000u;
-
-    // Handle rounding overflow in mantissa
-    if (mant & 0x00800000u) {
-        mant = 0;
-        exp += 1;
-    }
-
-    // Overflow after rounding -> Inf
-    if (exp >= 0x1F)
-        return sign | 0x7C00u;
-
-    // Compose final 16-bit result
-    return sign | ((exp & 0x1F) << 10) | (mant >> 13);
+    return (sign << 15) | (exp_h << 10) | frac_h;
 }
 
-float fp16_to_float(fp16 h)
-{
-    uint16_t h_exp = (h & 0x7C00u);
-    uint16_t h_sig = (h & 0x03FFu);
-    uint32_t f_sgn = ((uint32_t)h & 0x8000u) << 16;
-    uint32_t f_exp;
-    uint32_t f_sig;
-
-    if (h_exp == 0x0000u) {
-        // Zero or subnormal number
-        if (h_sig == 0) {
-            // ±0
-            f_exp = 0;
-            f_sig = 0;
-        } else {
-            // Subnormal -> normalize it
-            int shift = 0;
-            while ((h_sig & 0x0400u) == 0) {
-                h_sig <<= 1;
-                shift++;
-            }
-            h_sig &= 0x03FFu;
-            f_exp = (127 - 15 - shift) << 23;
-            f_sig = ((uint32_t)h_sig) << 13;
-        }
-    } else if (h_exp == 0x7C00u) {
-        // Inf or NaN
-        f_exp = 0xFFu << 23;
-        f_sig = ((uint32_t)h_sig) << 13;
-    } else {
-        // Normalized number
-        uint32_t exp = ((h_exp >> 10) & 0x1Fu);
-        f_exp = (exp + (127 - 15)) << 23;
-        f_sig = ((uint32_t)h_sig) << 13;
-    }
-
-    uint32_t f_bits = f_sgn | f_exp | f_sig;
-    float f;
-    memcpy(&f, &f_bits, sizeof(f));
-    return f;
+double fp16_to_double(fp16 h) { 
+    uint16_t sign = (h >> 15) & 0x1u; 
+    uint16_t exp = (h >> 10) & 0x1Fu; 
+    uint16_t frac = h & 0x03FFu; 
+    uint64_t exp_d = 0; 
+    uint64_t frac_d = 0; 
+    if (exp == 0x1F) { // Inf or NaN 
+        exp_d = 0x7FF; // double exponent all 1s 
+        frac_d = (frac ? ((uint64_t)frac << (52 - 10)) : 0); // propagate fraction 
+    } else if (exp == 0) { // Zero or subnormal 
+        if (frac != 0) { // if Zero, do nothing (exp_d and frac_d are 0) 
+            // Subnormal: scale fraction up to normalized double 
+            // FP16 subnormal: value = frac * 2^(-24) (2^-14 / 2^10) 
+            uint64_t frac_norm = frac; 
+            int exp_shift = 0; 
+            while ((frac_norm & 0x400) == 0) { // 0x400 = 1 << 10 (FP16 MSB) 
+                frac_norm <<= 1; exp_shift++; 
+            } 
+            frac_norm &= 0x3FF; 
+            frac_d = frac_norm << (52 - 10); 
+            exp_d = (uint64_t)(1023 - 15 - exp_shift); 
+        } 
+    } else { // Normalized number 
+        frac_d = ((uint64_t)frac) << (52 - 10); // align fraction to 52 bits 
+        exp_d = (uint64_t)((int32_t)exp - 15 + 1023); // double bias 
+    } 
+    
+    // Compose final 64-bit result 
+    uint64_t d_bits = ((uint64_t)sign << 63) | (exp_d << 52) | frac_d; 
+    double d; 
+    memcpy(&d, &d_bits, sizeof(d)); 
+    return d; 
 }
 
 // Fused multiply-add for FP16
 fp16 fp16_fma(fp16 a, fp16 b, fp16 c) {
-    float fa = fp16_to_float(a);
-    float fb = fp16_to_float(b);
-    float fc = fp16_to_float(c);
-    float result = (fa * fb) + fc;
-    return float_to_fp16(result);
+    double da = fp16_to_double(a);
+    double db = fp16_to_double(b);
+    double dc = fp16_to_double(c);
+    double result = (da * db) + dc;
+    return double_to_fp16(result);
 }
 
 void matmul_fp16(fp16 * z, fp16 * y, fp16 * x, fp16 * w, uint16_t m_size, uint16_t n_size, uint16_t k_size){
