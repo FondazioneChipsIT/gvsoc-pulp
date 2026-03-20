@@ -32,10 +32,10 @@ class MagiaArch:
     EVENT_UNIT_ADDR_START   = FSYNC_CTRL_ADDR_END + 1
     EVENT_UNIT_SIZE         = 0x0000_0FFF
     EVENT_UNIT_ADDR_END     = EVENT_UNIT_ADDR_START + EVENT_UNIT_SIZE
-    SPATZ_CTRL_START        = EVENT_UNIT_ADDR_END + 1
-    SPATZ_CTRL_SIZE         = 0x0000_00FF
-    SPATZ_CTRL_END          = SPATZ_CTRL_START + SPATZ_CTRL_SIZE
-    RESERVED_ADDR_START     = SPATZ_CTRL_END + 1
+    CLUSTER_CTRL_START      = EVENT_UNIT_ADDR_END + 1
+    CLUSTER_CTRL_SIZE       = 0x0000_00FF
+    CLUSTER_CTRL_END        = CLUSTER_CTRL_START + CLUSTER_CTRL_SIZE
+    RESERVED_ADDR_START     = CLUSTER_CTRL_END + 1
     RESERVED_SIZE           = 0x0000_E7FF
     RESERVED_ADDR_END       = RESERVED_ADDR_START + RESERVED_SIZE
     STACK_ADDR_START        = RESERVED_ADDR_END + 1
@@ -53,11 +53,6 @@ class MagiaArch:
     STDOUT_ADDR_START       = 0xFFFF_0004
     STDOUT_SIZE             = 0x100
 
-    # Snitch_Spatz
-    SPATZ_BOOTROM_ADDR         = 0x1000_0000
-    SPATZ_BOOTROM_SIZE         = 0x100
-    SPATZ_ROMFILE              = 'pulp/snitch/bootrom_spatz.bin'
-
     # From magia_pkg.sv
     N_MEM_BANKS         = 32        # Number of TCDM banks
     N_WORDS_BANK        = 8192      # Number of words per TCDM bank
@@ -66,11 +61,24 @@ class MagiaArch:
     BYTES_PER_WORD      = 4
     TILE_CLK_FREQ       = 200 * (10 ** 6)
 
-    N_TILES_X           = 4
-    N_TILES_Y           = 4
+    # Snitch_Spatz
+    SPATZ_ENABLE               = False
+    SPATZ_BOOTROM_ADDR         = 0x1000_0000
+    SPATZ_BOOTROM_SIZE         = 0x100
+    SPATZ_ROMFILE              = ''
+    USE_NEW_SPATZ              = True
 
+    # Pulp Cores
+    PULP_ENABLE         = True
+    PULP_BINARY         = ''
+    NB_PULP_CORES       = 8
+
+    # Tiles assignment
+    N_TILES_X           = 1
+    N_TILES_Y           = 1
+
+    # Aux config
     USE_NARROW_WIDE     = False
-    USE_NEW_SPATZ       = True
 
 class MagiaTree(Tree):
     def __init__(self, parent, name):
@@ -82,13 +90,18 @@ class MagiaTree(Tree):
 
         self.nb_clusters = self.n_tiles_x*self.n_tiles_y
 
-        self.romfile = Value(self, 'spatz_romfile', MagiaArch.SPATZ_ROMFILE, cast=str,
-            description='Snitch_Spatz rom file')
-        
-        if len(self.romfile) == 0:
-            self.enable_spatz = False
-        else: 
-            self.enable_spatz = True
+        if MagiaArch.SPATZ_ENABLE:
+            self.romfile = Value(self, 'spatz_romfile', MagiaArch.SPATZ_ROMFILE, cast=str,
+                description='Snitch_Spatz rom file')
+            print("SNITCH_SPATZ complex enabled")
+
+        if MagiaArch.PULP_ENABLE:
+            self.pulp_bin = Value(self, 'pulp_binary', MagiaArch.PULP_BINARY, cast=str,
+                description='Pulp cores binary file')
+
+            self.nb_pulp_cores = Value(self, 'nb_pulp_cores', MagiaArch.NB_PULP_CORES, cast=int,
+                description='Number of pulp cores')
+            print(f"PULP complex enabled with {self.nb_pulp_cores} cores")
 
 class MagiaDSE:
     SOC_L2_LATENCY              = 2
