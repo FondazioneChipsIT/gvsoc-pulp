@@ -449,7 +449,7 @@ class MagiaV3Tile(gvsoc.systree.Component):
         if MagiaArch.SPATZ_ENABLE:
             self.bind(cluster_regs, 'spatz_done_irq', event_unit, 'in_event_8_pe_0')
         if MagiaArch.PULP_ENABLE:
-            self.bind(cluster_regs, 'pulp_done_irq', event_unit, 'in_event_9_pe_0')
+            self.bind(cluster_regs, 'pulp_done_irq', event_unit, 'in_event_12_pe_0')
         self.bind(redmule, 'done_irq', event_unit, 'in_event_10_pe_0')
         self.bind(fsync_mm_ctrl, 'fsync_done_irq', event_unit, 'in_event_24_pe_0')
 
