@@ -23,14 +23,14 @@ try:
 except ImportError:
     from typing_extensions import override  # Python 3.10–3.11
 
-from vp.clock_domain import ClockDomain
+from vp.clock_domain import Clock_domain
 from gvsoc.systree import Component
 from gvrun.parameter import TargetParameter
 
 from pulp.snitch.snitch_testbench_config import SnitchTestbenchConfig, SnitchTestbenchBoardConfig, SnitchTestbenchMultiBoardConfig
 from utils.loader.loader import ElfLoader
 from pulp.snitch.snitch_core import SnitchFast
-from memory.memory import Memory
+from memory.memory_v2 import Memory
 from interco.router import Router
 
 
@@ -111,7 +111,7 @@ class SnitchTestbenchBoard(Component):
 
         self.set_target_name('snitch.testbench')
 
-        clock = ClockDomain     ( self, 'clock', frequency=config.frequency )
+        clock = Clock_domain     ( self, 'clock', frequency=config.frequency )
         soc   = SnitchTestbench ( self, 'soc',   config.soc                 )
 
         clock.o_CLOCK ( soc.i_CLOCK() )
@@ -120,7 +120,7 @@ class SnitchTestbenchMultiBoard(Component):
 
     def __init__(self, parent: Component, name: str, config: SnitchTestbenchMultiBoardConfig):
 
-        super().__init__(parent, name, config)
+        super().__init__(parent, name, config=config)
 
         boards: list[SnitchTestbenchBoard] = []
         for i in range(0, config.nb_boards):
