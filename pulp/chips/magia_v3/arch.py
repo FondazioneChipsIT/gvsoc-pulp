@@ -62,23 +62,20 @@ class MagiaArch:
     TILE_CLK_FREQ       = 200 * (10 ** 6)
 
     # Snitch_Spatz
-    SPATZ_ENABLE               = True
+    SPATZ_ENABLE               = False
     SPATZ_BOOTROM_ADDR         = 0x1000_0000
     SPATZ_BOOTROM_SIZE         = 0x100
     SPATZ_ROMFILE              = ''
     USE_NEW_SPATZ              = True
 
     # Pulp Cores
-    PULP_ENABLE         = True
+    PULP_ENABLE         = False
     PULP_BINARY         = ''
     NB_PULP_CORES       = 8
 
     # Tiles assignment
-    N_TILES_X           = 1
-    N_TILES_Y           = 1
-
-    # Aux config
-    USE_NARROW_WIDE     = False
+    N_TILES_X           = 2
+    N_TILES_Y           = 2
 
 class MagiaTree(Tree):
     def __init__(self, parent, name):
@@ -112,6 +109,6 @@ class MagiaDSE:
     TILE_OBI_XBAR_LATENCY       = 2
     TILE_OBI_XBAR_SYNC          = True
     TILE_IDMA0_BQUEUE_SIZE      = 2
-    TILE_IDMA0_B_SIZE           = 4
+    TILE_IDMA0_B_SIZE           = 32
     TILE_IDMA1_BQUEUE_SIZE      = 2
-    TILE_IDMA1_B_SIZE           = 8
+    TILE_IDMA1_B_SIZE           = 32
