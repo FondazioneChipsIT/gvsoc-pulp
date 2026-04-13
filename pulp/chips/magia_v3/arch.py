@@ -74,8 +74,8 @@ class MagiaArch:
     NB_PULP_CORES       = 8
 
     # Tiles assignment
-    N_TILES_X           = 2
-    N_TILES_Y           = 2
+    N_TILES_X           = 4
+    N_TILES_Y           = 4
 
 class MagiaTree(Tree):
     def __init__(self, parent, name):
