@@ -71,7 +71,7 @@ class MagiaTileTcdm(gvsoc.systree.Component):
         banks = []
         for i in range(nb_banks):
             # Instantiate a new memory bank
-            bank = memory.Memory(self, f'bank_{i}', atomics=True, size=bank_size, latency=MagiaDSE.TILE_TCDM_LATENCY)
+            bank = memory.Memory(self, f'bank_{i}', atomics=True, size=bank_size, latency=MagiaDSE.TILE_TCDM_LATENCY, truncate_size=bank_size)
             banks.append(bank)
 
             # Bind the new bank (slave) to the interleaver (master)
@@ -203,8 +203,7 @@ class MagiaV2Tile(gvsoc.systree.Component):
                                     ce_height           = 8,
                                     ce_width            = 8,
                                     ce_pipe             = 1,
-                                    queue_depth         = 1,
-                                    loc_base            = (tid*MagiaArch.L1_TILE_OFFSET))
+                                    queue_depth         = 1)
             
         # Fsync mm controller
         fsync_mm_ctrl = FSync_mm_ctrl(self,f'tile-{tid}-fs-ctrl-mm')
@@ -289,23 +288,24 @@ class MagiaV2Tile(gvsoc.systree.Component):
                         size=MagiaArch.SPATZ_CTRL_SIZE, rm_base=True)
             
         # Bind obi xbar so that it can communicate with local L1
-        obi_xbar.o_MAP(l1_tcdm.i_INPUT(0), name="local-l1-mem",
+        obi_xbar.o_MAP(l1_tcdm.i_INPUT(0), name="obi-to-l1-mem-local",
                     base=MagiaArch.L1_ADDR_START+(tid*MagiaArch.L1_TILE_OFFSET),
                     size=MagiaArch.L1_SIZE, rm_base=False, remove_offset=(tid*MagiaArch.L1_TILE_OFFSET))
-        # Bind obi xbar so that it can communicate with tile xbar to get access to remote tiles l1 and reserved mem
-        for tile_id in range(0,tree.nb_clusters):
-            if (tile_id!=tid): #skip yourself
-                obi_xbar.o_MAP(tile_xbar.i_INPUT(), name=f'obi2axi-off-tile-{tile_id}-l1-mem',
-                        base=MagiaArch.L1_ADDR_START+(tile_id*MagiaArch.L1_TILE_OFFSET),
-                        size=MagiaArch.L1_SIZE, rm_base=False)
         # Bind tile xbar so that it can coomunicate with obi xbar l1 mem
         tile_xbar.o_MAP(obi_xbar.i_INPUT(), name="axi-to-obi-l1-mem",
                         base=MagiaArch.L1_ADDR_START+(tid*MagiaArch.L1_TILE_OFFSET),
                         size=MagiaArch.L1_SIZE, rm_base=False)
+
+        # Bind obi xbar so that it can communicate with tile xbar to get access to remote tiles l1 and reserved mem
+        for tile_id in range(0,tree.nb_clusters):
+            if (tile_id!=tid): #skip yourself
+                obi_xbar.o_MAP(tile_xbar.i_INPUT(), name=f'obi-to-axi-{tile_id}-l1-mem-off-tile',
+                        base=MagiaArch.L1_ADDR_START+(tile_id*MagiaArch.L1_TILE_OFFSET),
+                        size=MagiaArch.L1_SIZE, rm_base=False)
         # Bind tile xbar so that it can communicate with remote tiles l1 and reserved mem
         for tile_id in range(0,tree.nb_clusters):
             if (tile_id!=tid): #skip yourself
-                tile_xbar.o_MAP(self.__i_NARROW_OUTPUT(), name=f'axi-to-off-tile-{tile_id}-l1-mem',
+                tile_xbar.o_MAP(self.__i_NARROW_OUTPUT(), name=f'axi-to-{tile_id}-l1-mem-off-tile',
                         base=MagiaArch.L1_ADDR_START+(tile_id*MagiaArch.L1_TILE_OFFSET),
                         size=MagiaArch.L1_SIZE, rm_base=False)
             
