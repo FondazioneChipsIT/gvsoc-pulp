@@ -267,7 +267,7 @@ class Soc(st.Component):
 
         axi_ico.add_mapping('ddr', base=0x80000000, size=0x40000000, remove_offset=0x80000000)  #TODO Pretty sure addresses above 0xC0000000 are either used or non usable
         self.bind(axi_ico, 'ddr', self, 'ddr')
-        if pim_support: 
+        if pim_support:
             axi_ico.add_mapping('pim_toggle', base=0xC0000000, size=0x00000004, remove_offset=0x80000000)
             self.bind(axi_ico, 'pim_toggle', self, 'pim_toggle')
 
