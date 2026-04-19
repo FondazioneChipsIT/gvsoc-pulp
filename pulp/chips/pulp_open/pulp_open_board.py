@@ -27,6 +27,8 @@ import gvsoc.runner
 from pulp.chips.pulp_open.pulp_open import PulpOpenAttr
 if os.environ.get('USE_GVRUN') is None:
     from gapylib.chips.pulp.flash import *
+else:
+    import gvrun.flash
 
 
 class Pulp_open_board(st.Component):
@@ -55,6 +57,21 @@ class Pulp_open_board(st.Component):
                     },
                     size=8*1024*1024
                 ))
+        else:
+            default_content = os.path.join(
+                os.path.dirname(__file__), 'default_flash_content.json')
+            flash = gvrun.flash.Flash(
+                name='hyperflash',
+                size=8 * 1024 * 1024,
+                attributes={'flash_type': 'hyper'},
+                default_content_path=default_content,
+            )
+            self.register_flash(flash)
+            # Point the Hyperflash C++ model at the image gvrun will write.
+            # gvrun writes to {work_dir}/build/{flash.name}.bin; GVSoC runs
+            # with cwd == work_dir (see gvsoc/runner.py), so a relative path
+            # is sufficient.
+            hyperflash.add_property('content/image', 'build/hyperflash.bin')
 
         self.bind(pulp, 'hyper0_cs1_data', hyperflash, 'input')
 
