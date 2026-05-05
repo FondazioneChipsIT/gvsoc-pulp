@@ -38,7 +38,7 @@
     "l1": {
         "mapping": {
             "base": "0x10000000",
-            "size": "0x00010000",
+            "size": "0x00040000",
             "remove_offset": "0x10000000"
         },
         "ts_mapping": {
