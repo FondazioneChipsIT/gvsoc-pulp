@@ -22,16 +22,12 @@
 #include <vp/itf/io.hpp>
 #include <vp/itf/wire.hpp>
 #include <stdio.h>
-#include <iostream>
-#include <sstream>
-#include <string>
 #include <cstring>
 #include <stdint.h>
 
 /*****************************************************
 *                   Class Definition                 *
 *****************************************************/
-
 
 class ClusterRegs : public vp::Component
 {
@@ -45,6 +41,7 @@ protected:
     static vp::IoReqStatus req(vp::Block *__this, vp::IoReq *req);
     vp::IoSlave         input_itf;
 
+    /* Spatz registers — offsets [0x00, 0x18] */
     vp::reg_32 spatz_clock_en_reg;
     vp::reg_32 spatz_ready_reg;
     vp::reg_32 spatz_start_irq_reg;
@@ -57,10 +54,18 @@ protected:
     vp::WireMaster<bool> spatz_start_irq;
     vp::WireMaster<bool> spatz_done_irq;
 
+    /* PULP cluster registers — offsets [0x40, 0x48]
+     *   0x40: PULP_CLK_EN  — write 1 to start the cluster
+     *   0x44: PULP_BINARY  — binary entry point, written by CV32 before enabling clock
+     *   0x48: PULP_DONE    — each PULP hart writes 1 here on completion
+     */
     vp::reg_32 pulp_clock_en_reg;
+    vp::reg_32 pulp_binary_reg;
     vp::reg_32 pulp_done_reg;
-    vp::WireMaster<bool> pulp_clock_en;
-    vp::WireMaster<bool> pulp_done_irq;
+
+    vp::WireMaster<bool>     pulp_clock_en;
+    vp::WireMaster<bool>     pulp_done_irq;
+    vp::WireMaster<uint64_t> pulp_entry;
 
     vp::ClockEvent *spatz_fsm_eu_event;
     vp::ClockEvent *pulp_fsm_eu_event;
@@ -79,7 +84,6 @@ extern "C" vp::Component *gv_new(vp::ComponentConf &config)
 ClusterRegs::ClusterRegs(vp::ComponentConf &config)
     : vp::Component(config)
 {
-    //Initialize interface
     this->traces.new_trace("trace", &this->trace, vp::DEBUG);
 
     this->input_itf.set_req_meth(&ClusterRegs::req);
@@ -94,207 +98,201 @@ ClusterRegs::ClusterRegs(vp::ComponentConf &config)
     this->spatz_done_reg.set(0x00000000);
 
     this->pulp_clock_en_reg.set(0x00000000);
+    this->pulp_binary_reg.set(0x00000000);
     this->pulp_done_reg.set(0x00000000);
 
     this->nb_pulp_cores_to_wait = get_js_config()->get("nb_pulp_cores_to_wait")->get_int();
-    this->nb_recv_end_reqs=0;
-    
-    this->new_master_port("spatz_clock_en", &this->spatz_clock_en, this);
-    this->new_master_port("spatz_start_irq", &this->spatz_start_irq, this);
-    this->new_master_port("spatz_done_irq", &this->spatz_done_irq, this);
+    this->nb_recv_end_reqs = 0;
 
-    this->new_master_port("pulp_clock_en", &this->pulp_clock_en, this);
-    this->new_master_port("pulp_done_irq", &this->pulp_done_irq, this);
+    this->new_master_port("spatz_clock_en",  &this->spatz_clock_en,  this);
+    this->new_master_port("spatz_start_irq", &this->spatz_start_irq, this);
+    this->new_master_port("spatz_done_irq",  &this->spatz_done_irq,  this);
+
+    this->new_master_port("pulp_clock_en",  &this->pulp_clock_en,  this);
+    this->new_master_port("pulp_done_irq",  &this->pulp_done_irq,  this);
+    this->new_master_port("pulp_entry",     &this->pulp_entry,     this);
 
     this->spatz_fsm_eu_event = this->event_new(&ClusterRegs::spatz_fsm_handler);
-    this->pulp_fsm_eu_event = this->event_new(&ClusterRegs::pulp_fsm_handler);
+    this->pulp_fsm_eu_event  = this->event_new(&ClusterRegs::pulp_fsm_handler);
 
-    this->trace.msg(vp::Trace::LEVEL_TRACE,"[Magia Cluster regs] Instantiated\n");
-
+    this->trace.msg(vp::Trace::LEVEL_TRACE, "[Magia Cluster regs] Instantiated\n");
 }
 
-void ClusterRegs::spatz_fsm_handler(vp::Block *__this, vp::ClockEvent *event) {
+void ClusterRegs::spatz_fsm_handler(vp::Block *__this, vp::ClockEvent *event)
+{
     ClusterRegs *_this = (ClusterRegs *)__this;
-
     _this->spatz_done_reg.set(0x00);
     _this->spatz_done_irq.sync(false);
-    _this->trace.msg("[Magia Snitch Spatz Registers] Snitch Spatz done reg reset\n");
-          
+    _this->trace.msg("[Spatz Regs] Done reg reset\n");
 }
 
-void ClusterRegs::pulp_fsm_handler(vp::Block *__this, vp::ClockEvent *event) {
+void ClusterRegs::pulp_fsm_handler(vp::Block *__this, vp::ClockEvent *event)
+{
     ClusterRegs *_this = (ClusterRegs *)__this;
-
     _this->pulp_done_reg.set(0x00);
     _this->pulp_done_irq.sync(false);
-    _this->trace.msg("[Magia pulp Registers] PULP done reg reset\n");
-          
+    _this->trace.msg("[PULP Regs] Done reg reset\n");
 }
 
 vp::IoReqStatus ClusterRegs::req(vp::Block *__this, vp::IoReq *req)
 {
     ClusterRegs *_this = (ClusterRegs *)__this;
 
-    uint64_t offset = req->get_addr();
-    uint8_t *data = req->get_data();
-    uint64_t size = req->get_size();
-    bool is_write = req->get_is_write();
+    uint64_t offset  = req->get_addr();
+    uint8_t *data    = req->get_data();
+    uint64_t size    = req->get_size();
+    bool     is_write = req->get_is_write();
 
-    if (size!=4) {
-         _this->trace.fatal("[Magia Cluster regs] Memory mapped interface supports only 32 bits (4 bytes) buses. (Addr is 0x%08x, size is %lu)\n",offset,size);
+    if (size != 4) {
+        _this->trace.fatal("[Cluster Regs] Only 32-bit accesses supported (addr=0x%08lx size=%lu)\n", offset, size);
     }
 
-    if (offset == 0x00) { //SPATZ_CLK_EN
-        if (is_write == 1) {
-            uint32_t cnf_w;
-            memcpy((uint8_t*)&cnf_w,data,size);
-            _this->spatz_clock_en_reg.set(cnf_w);
-            if (cnf_w==0x01) {
+    /* ------------------------------------------------------------------ */
+    /* Spatz registers                                                      */
+    /* ------------------------------------------------------------------ */
+
+    if (offset == 0x00) { /* SPATZ_CLK_EN */
+        if (is_write) {
+            uint32_t val; memcpy(&val, data, 4);
+            _this->spatz_clock_en_reg.set(val);
+            if (val == 0x01) {
                 _this->spatz_clock_en.sync(true);
-                _this->trace.msg("[Magia Snitch Spatz Registers][0x00] Snitch Spatz enable clock\n");
-            }
-            else if (cnf_w==0x00) {
+                _this->trace.msg("[Spatz Regs][0x00] Clock enabled\n");
+            } else if (val == 0x00) {
                 _this->spatz_clock_en.sync(false);
-                _this->trace.msg("[Magia Snitch Spatz Registers][0x00] Snitch Spatz disable clock\n");
+                _this->trace.msg("[Spatz Regs][0x00] Clock disabled\n");
+            } else {
+                _this->trace.fatal("[Spatz Regs][0x00] Unsupported clock enable value\n");
             }
-            else {
-                _this->trace.fatal("[Magia Snitch Spatz Registers][0x00] Snitch Spatz enable clock unsupported value\n");
-            }
-        }
-        else {
-            uint32_t cnf_r =  _this->spatz_clock_en_reg.get();
-            memcpy((void *)data, (void *)&cnf_r, size);
-            _this->trace.msg("[Magia Snitch Spatz Registers][0x00] Snitch Spatz read clock enable register (0x%08x)\n",cnf_r);
+        } else {
+            uint32_t val = _this->spatz_clock_en_reg.get();
+            memcpy(data, &val, 4);
+            _this->trace.msg("[Spatz Regs][0x00] Read clock enable (0x%08x)\n", val);
         }
     }
-    else if (offset == 0x04) { //SPATZ_READY_REG
-        if (is_write == 1) {
-            uint32_t cnf_w;
-            memcpy((uint8_t*)&cnf_w,data,size);
-            _this->spatz_ready_reg.set(cnf_w);
-            _this->trace.msg("[Magia Snitch Spatz Registers][0x04] Snitch Spatz written ready register (0x%08x)\n",cnf_w);
-        }
-        else {
-            uint32_t cnf_r =  _this->spatz_ready_reg.get();
-            memcpy((void *)data, (void *)&cnf_r, size);
-            _this->trace.msg("[Magia Snitch Spatz Registers][0x04] Snitch Spatz read ready register (0x%08x)\n",cnf_r);
+    else if (offset == 0x04) { /* SPATZ_READY */
+        if (is_write) {
+            uint32_t val; memcpy(&val, data, 4);
+            _this->spatz_ready_reg.set(val);
+            _this->trace.msg("[Spatz Regs][0x04] Write ready (0x%08x)\n", val);
+        } else {
+            uint32_t val = _this->spatz_ready_reg.get();
+            memcpy(data, &val, 4);
+            _this->trace.msg("[Spatz Regs][0x04] Read ready (0x%08x)\n", val);
         }
     }
-    else if (offset == 0x08) { //SPATZ_START
-        if (is_write == 1) {
-            uint32_t cnf_w;
-            memcpy((uint8_t*)&cnf_w,data,size);
-            _this->spatz_start_irq_reg.set(cnf_w);
-            if (cnf_w==0x01) {
+    else if (offset == 0x08) { /* SPATZ_START */
+        if (is_write) {
+            uint32_t val; memcpy(&val, data, 4);
+            _this->spatz_start_irq_reg.set(val);
+            if (val == 0x01) {
                 _this->spatz_start_irq.sync(true);
-                _this->trace.msg("[Magia Snitch Spatz Registers][0x08] Snitch Spatz start irq True\n");
-            }
-            else if (cnf_w==0x00) {
+                _this->trace.msg("[Spatz Regs][0x08] Start IRQ asserted\n");
+            } else if (val == 0x00) {
                 _this->spatz_start_irq.sync(false);
-                _this->trace.msg("[Magia Snitch Spatz Registers][0x08] Snitch Spatz start irq False\n");
+                _this->trace.msg("[Spatz Regs][0x08] Start IRQ deasserted\n");
+            } else {
+                _this->trace.fatal("[Spatz Regs][0x08] Unsupported start value\n");
             }
-            else {
-                _this->trace.fatal("[Magia Snitch Spatz Registers][0x08] Snitch Spatz start unsupported value\n");
-            }
-        }
-        else {
-            uint32_t cnf_r =  _this->spatz_start_irq_reg.get();
-            memcpy((void *)data, (void *)&cnf_r, size);
-            _this->trace.msg("[Magia Snitch Spatz Registers][0x08] Snitch Spatz read start register (0x%08x)\n",cnf_r);
+        } else {
+            uint32_t val = _this->spatz_start_irq_reg.get();
+            memcpy(data, &val, 4);
+            _this->trace.msg("[Spatz Regs][0x08] Read start (0x%08x)\n", val);
         }
     }
-    else if (offset == 0x0C) { //SPATZ_TASKBIN_REG
-        if (is_write == 1) {
-            uint32_t cnf_w;
-            memcpy((uint8_t*)&cnf_w,data,size);
-            _this->spatz_taskbin_reg.set(cnf_w);
-            _this->trace.msg("[Magia Snitch Spatz Registers][0x0C] Snitch Spatz written taskbin register (0x%08x)\n",cnf_w);
-        }
-        else {
-            uint32_t cnf_r =  _this->spatz_taskbin_reg.get();
-            memcpy((void *)data, (void *)&cnf_r, size);
-            _this->trace.msg("[Magia Snitch Spatz Registers][0x0C] Snitch Spatz read task register (0x%08x)\n",cnf_r);
+    else if (offset == 0x0C) { /* SPATZ_TASKBIN */
+        if (is_write) {
+            uint32_t val; memcpy(&val, data, 4);
+            _this->spatz_taskbin_reg.set(val);
+            _this->trace.msg("[Spatz Regs][0x0C] Write taskbin (0x%08x)\n", val);
+        } else {
+            uint32_t val = _this->spatz_taskbin_reg.get();
+            memcpy(data, &val, 4);
+            _this->trace.msg("[Spatz Regs][0x0C] Read taskbin (0x%08x)\n", val);
         }
     }
-    else if (offset == 0x10) { //SPATZ_DATA_REG
-        if (is_write == 1) {
-            uint32_t cnf_w;
-            memcpy((uint8_t*)&cnf_w,data,size);
-            _this->spatz_data_reg.set(cnf_w);
-            _this->trace.msg("[Magia Snitch Spatz Registers][0x10] Snitch Spatz written data register (0x%08x)\n",cnf_w);
-        }
-        else {
-            uint32_t cnf_r =  _this->spatz_data_reg.get();
-            memcpy((void *)data, (void *)&cnf_r, size);
-            _this->trace.msg("[Magia Snitch Spatz Registers][0x10] Snitch Spatz read data register (0x%08x)\n",cnf_r);
+    else if (offset == 0x10) { /* SPATZ_DATA */
+        if (is_write) {
+            uint32_t val; memcpy(&val, data, 4);
+            _this->spatz_data_reg.set(val);
+            _this->trace.msg("[Spatz Regs][0x10] Write data (0x%08x)\n", val);
+        } else {
+            uint32_t val = _this->spatz_data_reg.get();
+            memcpy(data, &val, 4);
+            _this->trace.msg("[Spatz Regs][0x10] Read data (0x%08x)\n", val);
         }
     }
-    else if (offset == 0x14) { //SPATZ_RETURN_REG
-        if (is_write == 1) {
-            uint32_t cnf_w;
-            memcpy((uint8_t*)&cnf_w,data,size);
-            _this->spatz_return_reg.set(cnf_w);
-            _this->trace.msg("[Magia Snitch Spatz Registers][0x14] Snitch Spatz written return register (0x%08x)\n",cnf_w);
-        }
-        else {
-            uint32_t cnf_r =  _this->spatz_return_reg.get();
-            memcpy((void *)data, (void *)&cnf_r, size);
-            _this->trace.msg("[Magia Snitch Spatz Registers][0x14] Snitch Spatz read return register (0x%08x)\n",cnf_r);
+    else if (offset == 0x14) { /* SPATZ_RETURN */
+        if (is_write) {
+            uint32_t val; memcpy(&val, data, 4);
+            _this->spatz_return_reg.set(val);
+            _this->trace.msg("[Spatz Regs][0x14] Write return (0x%08x)\n", val);
+        } else {
+            uint32_t val = _this->spatz_return_reg.get();
+            memcpy(data, &val, 4);
+            _this->trace.msg("[Spatz Regs][0x14] Read return (0x%08x)\n", val);
         }
     }
-    else if (offset == 0x18) { //SPATZ_DONE
-        if (is_write == 1) {
-            uint32_t cnf_w;
-            memcpy((uint8_t*)&cnf_w,data,size);
-            _this->spatz_done_reg.set(cnf_w);
-            _this->trace.msg("[Magia Snitch Spatz Registers][0x18] Snitch Spatz done reg set\n");
+    else if (offset == 0x18) { /* SPATZ_DONE */
+        if (is_write) {
+            uint32_t val; memcpy(&val, data, 4);
+            _this->spatz_done_reg.set(val);
             _this->spatz_done_irq.sync(true);
-            //trigger fsm
             _this->event_enqueue(_this->spatz_fsm_eu_event, 1);
-        }
-        else {
-            _this->trace.fatal("[Magia Snitch Spatz Registers][0x18] Snitch Spatz done unsupported read to register\n");
+            _this->trace.msg("[Spatz Regs][0x18] Done signalled\n");
+        } else {
+            _this->trace.fatal("[Spatz Regs][0x18] Done register is write-only\n");
         }
     }
-    else if (offset == 0x40) { //PULP_CLK_EN
-        if (is_write == 1) {
-            uint32_t cnf_w;
-            memcpy((uint8_t*)&cnf_w,data,size);
-            _this->pulp_clock_en_reg.set(cnf_w);
-            if (cnf_w==0x01) {
+
+    /* ------------------------------------------------------------------ */
+    /* PULP cluster registers                                               */
+    /* ------------------------------------------------------------------ */
+
+    else if (offset == 0x40) { /* PULP_CLK_EN */
+        if (is_write) {
+            uint32_t val; memcpy(&val, data, 4);
+            _this->pulp_clock_en_reg.set(val);
+            if (val == 0x01) {
                 _this->pulp_clock_en.sync(true);
-                _this->trace.msg("[Magia pulp Registers][0x40] PULP enable clock\n");
-            }
-            else if (cnf_w==0x00) {
+                _this->trace.msg("[PULP Regs][0x40] Clock enabled\n");
+            } else if (val == 0x00) {
                 _this->pulp_clock_en.sync(false);
-                _this->trace.msg("[Magia pulp Registers][0x40] PULP disable clock\n");
+                _this->trace.msg("[PULP Regs][0x40] Clock disabled\n");
+            } else {
+                _this->trace.fatal("[PULP Regs][0x40] Unsupported clock enable value\n");
             }
-            else {
-                _this->trace.fatal("[Magia pulp Registers][0x40] PULP enable clock unsupported value\n");
-            }
-        }
-        else {
-            uint32_t cnf_r =  _this->pulp_clock_en_reg.get();
-            memcpy((void *)data, (void *)&cnf_r, size);
-            _this->trace.msg("[Magia pulp Registers][0x40] PULP read clock enable register (0x%08x)\n",cnf_r);
+        } else {
+            uint32_t val = _this->pulp_clock_en_reg.get();
+            memcpy(data, &val, 4);
+            _this->trace.msg("[PULP Regs][0x40] Read clock enable (0x%08x)\n", val);
         }
     }
-    else if (offset == 0x44) { //PULP_DONE
-        if (is_write == 1) {
-            uint32_t cnf_w;
-            memcpy((uint8_t*)&cnf_w,data,size);
-            _this->pulp_done_reg.set(cnf_w);
-            _this->trace.msg("[Magia pulp Registers][0x44] PULP done reg set\n");
+    else if (offset == 0x44) { /* PULP_BINARY — entry point written by CV32 before enabling clock */
+        if (is_write) {
+            uint32_t val; memcpy(&val, data, 4);
+            _this->pulp_binary_reg.set(val);
+            _this->pulp_entry.sync((uint64_t)val);
+            _this->trace.msg("[PULP Regs][0x44] Binary entry point set (0x%08x)\n", val);
+        } else {
+            uint32_t val = _this->pulp_binary_reg.get();
+            memcpy(data, &val, 4);
+            _this->trace.msg("[PULP Regs][0x44] Read binary entry point (0x%08x)\n", val);
+        }
+    }
+    else if (offset == 0x48) { /* PULP_DONE — each hart writes 1 on completion */
+        if (is_write) {
+            uint32_t val; memcpy(&val, data, 4);
+            _this->pulp_done_reg.set(val);
             _this->nb_recv_end_reqs++;
-            if (_this->nb_recv_end_reqs==_this->nb_pulp_cores_to_wait) {
-                _this->nb_recv_end_reqs=0;
+            _this->trace.msg("[PULP Regs][0x48] Done write %d/%d\n", _this->nb_recv_end_reqs, _this->nb_pulp_cores_to_wait);
+            if (_this->nb_recv_end_reqs == _this->nb_pulp_cores_to_wait) {
+                _this->nb_recv_end_reqs = 0;
                 _this->pulp_done_irq.sync(true);
-                //trigger fsm
                 _this->event_enqueue(_this->pulp_fsm_eu_event, 1);
             }
-        }
-        else {
-            _this->trace.fatal("[Magia pulp Registers][0x44] PULP done unsupported read to register\n");
+        } else {
+            _this->trace.fatal("[PULP Regs][0x48] Done register is write-only\n");
         }
     }
 

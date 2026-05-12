@@ -50,3 +50,6 @@ class ClusterRegs(gvsoc.systree.Component):
     
     def o_PULP_DONE(self, itf: gvsoc.systree.SlaveItf):
         self.itf_bind('pulp_done_irq', itf, signature='wire<bool>')
+
+    def o_PULP_ENTRY(self, itf: gvsoc.systree.SlaveItf):
+        self.itf_bind('pulp_entry', itf, signature='wire<uint64_t>')

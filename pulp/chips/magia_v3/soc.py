@@ -23,6 +23,9 @@ import utils.loader.loader
 
 from pulp.chips.magia_v3.tile import MagiaV3Tile
 from pulp.chips.magia_v3.arch import *
+
+if MagiaArch.ENABLE_PCIE_VFIO:
+    import pulp.pcie_vfio_bridge.pcie_vfio_mem_bridge
 from pulp.floonoc.floonoc import *
 from pulp.chips.magia_v3.fractal_sync.fractal_sync import *
 from pulp.chips.magia_v3.kill_module.kill_module import *
@@ -48,20 +51,20 @@ def calculate_north_south(n, tiling):
     return north, south
 
 class MagiaV3Soc(gvsoc.systree.Component):
-    def __init__(self, parent, name, tree, parser, binary):
+    def __init__(self, parent, name, tree, parser, binary=None):
         super().__init__(parent, name)
 
         self.set_attributes(tree)
 
         # Standard platform level bin Loader
-        ctrl_core_loader=utils.loader.loader.ElfLoader(self, f'ctrl_core_loader', binary=binary)
-        self.ctrl_core_loader = ctrl_core_loader # this is needed when building the platform as it requires at least one binary
+        if not MagiaArch.ENABLE_PCIE_VFIO:
+            ctrl_core_loader=utils.loader.loader.ElfLoader(self, f'ctrl_core_loader', binary=binary)
+            self.ctrl_core_loader = ctrl_core_loader # this is needed when building the platform as it requires at least one binary
 
-        if MagiaArch.PULP_ENABLE:
-            pulp_loader=utils.loader.loader.ElfLoader(self, f'pulp_loader', binary=self.get_file_path(tree.pulp_bin))
 
         # Simulation engine killer
-        killer=KillModule(self,'kill-module',kill_addr_base=MagiaArch.TEST_END_ADDR_START,kill_addr_size=MagiaArch.TEST_END_SIZE,nb_cores_to_wait=tree.nb_clusters)
+        killer=KillModule(self,'kill-module',kill_addr_base=MagiaArch.TEST_END_ADDR_START,kill_addr_size=MagiaArch.TEST_END_SIZE,nb_cores_to_wait=tree.nb_clusters,
+                          done_irq_enable=MagiaArch.ENABLE_PCIE_VFIO)
 
         # Single clock domain
         clock = vp.clock_domain.Clock_domain(self, 'tile-clock',
@@ -74,6 +77,15 @@ class MagiaV3Soc(gvsoc.systree.Component):
             cluster.append(MagiaV3Tile(self, f'magia-tile-{id}', tree, parser, id))
 
         l2_mem = memory.Memory(self, f'L2-mem', size=MagiaArch.L2_SIZE,latency=MagiaDSE.SOC_L2_LATENCY)
+
+        if MagiaArch.ENABLE_PCIE_VFIO:
+            pcie_ep = pulp.pcie_vfio_bridge.pcie_vfio_mem_bridge.PCIeVfioMemBridge(
+                     self,
+                     'l2-vfio-bridge',
+                     socket_path='/tmp/gvsoc.sock',
+                     bar0_size=0x1000,
+                     dma_chunk_bytes=16
+                    )
 
         # Create Tile matrix for IDs
         # --------------> X direction
@@ -184,9 +196,9 @@ class MagiaV3Soc(gvsoc.systree.Component):
                 print(f"[NoC] Adding cluster {id} at position x={x} y={y}")
                 cluster[id].o_KILLER_OUTPUT(killer.i_INPUT())
                 cluster[id].o_NARROW_OUTPUT(noc.i_NARROW_INPUT(x,y))
-                noc.o_NARROW_MAP(cluster[id].i_NARROW_INPUT(),name=f'tile-{id}-l1-mem',base=MagiaArch.L1_ADDR_START+(id*MagiaArch.L1_TILE_OFFSET),size=MagiaArch.L1_SIZE,x=x,y=y,rm_base=False)
+                noc.o_NARROW_MAP(cluster[id].i_NARROW_INPUT(),name=f'narrow-tile-{id}-l1-mem',base=MagiaArch.L1_ADDR_START+(id*MagiaArch.L1_TILE_OFFSET),size=MagiaArch.L1_SIZE,x=x,y=y,rm_base=False)
                 cluster[id].o_WIDE_OUTPUT(noc.i_WIDE_INPUT(x,y))
-                noc.o_WIDE_MAP(cluster[id].i_WIDE_INPUT(),name=f'tile-{id}-l1-mem',base=MagiaArch.L1_ADDR_START+(id*MagiaArch.L1_TILE_OFFSET),size=MagiaArch.L1_SIZE,x=x,y=y,rm_base=False,remove_offset=(id*MagiaArch.L1_TILE_OFFSET))
+                noc.o_WIDE_MAP(cluster[id].i_WIDE_INPUT(),name=f'wide-tile-{id}-l1-mem',base=MagiaArch.L1_ADDR_START+(id*MagiaArch.L1_TILE_OFFSET),size=MagiaArch.L1_SIZE,x=x,y=y,rm_base=False)
                 id += 1
 
         # Bind memory to noc
@@ -208,6 +220,10 @@ class MagiaV3Soc(gvsoc.systree.Component):
             noc.o_WIDE_BIND(l2_mem.i_INPUT(), x=0, y=y)
         
         noc.o_MAP_DIR(base=MagiaArch.L2_ADDR_START,size=MagiaArch.L2_SIZE, dir=FlooNocDirection.LEFT,name=f'mem_left', rm_base=True)
+
+        if MagiaArch.ENABLE_PCIE_VFIO:
+            pcie_ep.o_MEM(l2_mem.i_INPUT())
+            killer.o_IRQ_DONE(pcie_ep.i_IRQ_DONE())
 
         # Fractal tree routing
         for lvl in range(0,int(math.log2(tree.nb_clusters))):
@@ -393,13 +409,13 @@ class MagiaV3Soc(gvsoc.systree.Component):
                     fsync_center_v[lvl-1][1].o_MASTER_EAST_WEST(fsync_root.i_SLAVE_EAST())
                     fsync_root.o_SLAVE_EAST(fsync_center_v[lvl-1][1].i_MASTER_EAST_WEST())
 
-        # Bind loader
+        # Bind loader or PCIe bridge to clusters
         for id in range(0,tree.nb_clusters):
-            if (id == 0):
-                ctrl_core_loader.o_OUT(cluster[id].i_LOADER()) #only cluster connected to the corner loads the elf
-            ctrl_core_loader.o_START(cluster[id].i_FETCHEN())
-            ctrl_core_loader.o_ENTRY(cluster[id].i_ENTRY())
-            if MagiaArch.PULP_ENABLE:
+            if MagiaArch.ENABLE_PCIE_VFIO:
+                pcie_ep.o_FETCH_ENABLE(cluster[id].i_FETCHEN())
+                pcie_ep.o_ENTRY_ADDR(cluster[id].i_ENTRY())
+            else:
                 if (id == 0):
-                    pulp_loader.o_OUT(cluster[id].i_LOADER()) #only cluster connected to the corner loads the elf
-                pulp_loader.o_ENTRY(cluster[id].i_PULP_ENTRY())
+                    ctrl_core_loader.o_OUT(cluster[id].i_LOADER()) #only cluster connected to the corner loads the elf
+                ctrl_core_loader.o_START(cluster[id].i_FETCHEN())
+                ctrl_core_loader.o_ENTRY(cluster[id].i_ENTRY())

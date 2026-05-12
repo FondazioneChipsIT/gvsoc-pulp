@@ -62,20 +62,21 @@ class MagiaArch:
     TILE_CLK_FREQ       = 200 * (10 ** 6)
 
     # Snitch_Spatz
-    SPATZ_ENABLE               = False
+    SPATZ_ENABLE               = True
     SPATZ_BOOTROM_ADDR         = 0x1000_0000
     SPATZ_BOOTROM_SIZE         = 0x100
     SPATZ_ROMFILE              = ''
     USE_NEW_SPATZ              = True
 
     # Pulp Cores
-    PULP_ENABLE         = False
-    PULP_BINARY         = ''
+    PULP_ENABLE         = True
     NB_PULP_CORES       = 8
 
     # Tiles assignment
     N_TILES_X           = 4
     N_TILES_Y           = 4
+
+    ENABLE_PCIE_VFIO            = False
 
 class MagiaTree(Tree):
     def __init__(self, parent, name):
@@ -93,9 +94,6 @@ class MagiaTree(Tree):
             print("SNITCH_SPATZ complex enabled")
 
         if MagiaArch.PULP_ENABLE:
-            self.pulp_bin = Value(self, 'pulp_binary', MagiaArch.PULP_BINARY, cast=str,
-                description='Pulp cores binary file')
-
             self.nb_pulp_cores = Value(self, 'nb_pulp_cores', MagiaArch.NB_PULP_CORES, cast=int,
                 description='Number of pulp cores')
             print(f"PULP complex enabled with {self.nb_pulp_cores} cores")

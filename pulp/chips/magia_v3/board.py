@@ -18,7 +18,7 @@
 import gvsoc.systree
 import gvsoc.runner
 import os
-from pulp.chips.magia_v3.arch import MagiaTree
+from pulp.chips.magia_v3.arch import MagiaTree, MagiaArch
 
 from pulp.chips.magia_v3.soc import MagiaV3Soc
 from gvrun.parameter import TargetParameter
@@ -48,7 +48,7 @@ class MagiaV3Board(gvsoc.systree.Component):
         # We configure the loader binary now in the configure steps since it is coming from
         # a parameter which can be set either from command line or from the build process
         binary = self.get_parameter('binary')
-        if binary is not None:
+        if binary is not None and not MagiaArch.ENABLE_PCIE_VFIO:
             self.soc.ctrl_core_loader.set_binary(binary)
 
     def handle_binary(self, binary):
