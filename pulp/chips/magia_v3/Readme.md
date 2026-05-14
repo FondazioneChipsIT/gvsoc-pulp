@@ -417,11 +417,12 @@ The cluster control register block (`ClusterRegs`) is memory-mapped at **`PULP_C
 - **`0x14` `SPATZ_RETURN`** (R/W) — return value from Spatz task
 - **`0x18` `SPATZ_DONE`** (W) — write `1` when Spatz is done; fires `spatz_done_irq`
 
-#### PULP sub-block — offsets `[0x40, 0x48]`
+#### PULP sub-block — offsets `[0x40, 0x4C]`
 
-- **`0x40` `PULP_CLK_EN`** (R/W) — write `1` to start the PULP cluster clock, `0` to stop
+- **`0x40` `PULP_CLK_EN`** (R/W) — one-hot bitmask; bit N set to `1` enables PULP core N independently
 - **`0x44` `PULP_BINARY`** (R/W) — PULP binary entry point; CV32 writes `_pulp_binary_start` here before enabling the clock
-- **`0x48` `PULP_DONE`** (W) — each PULP hart writes `1` here on completion; fires `pulp_done_irq` after all cores have reported
+- **`0x48` `PULP_NB_CORES_TO_WAIT`** (R/W) — number of PULP harts CV32 expects to wait for; written by firmware before enabling cores
+- **`0x4C` `PULP_DONE`** (W) — each PULP hart writes `1` here on completion; fires `pulp_done_irq` after `PULP_NB_CORES_TO_WAIT` writes received
 
 ### PULP Binary Delivery
 
@@ -432,9 +433,10 @@ The PULP binary is **embedded inside the CV32 ELF** rather than being loaded fro
 3. The `ctrl_core_loader` loads the entire CV32 ELF (including the embedded PULP binary) into instruction RAM at simulation start
 4. At runtime, CV32 writes the `_pulp_binary_start` symbol address to `PULP_BINARY` (`0x1744`)
 5. `ClusterRegs` captures this address and drives the `pulp_entry` wire (`wire<uint64_t>`) to all PULP cores
-6. CV32 writes `1` to `PULP_CLK_EN` (`0x1740`) — PULP cores begin fetching from `pulp_entry`
-7. Each PULP core writes `1` to `PULP_DONE` (`0x1748`) on completion
-8. After all `nb_pulp_cores` writes are received, `ClusterRegs` fires `pulp_done_irq` to the CV32 Event Unit
+6. CV32 writes the number of cores to wait for to `PULP_NB_CORES_TO_WAIT` (`0x1748`)
+7. CV32 writes a one-hot bitmask to `PULP_CLK_EN` (`0x1740`) — only the cores with their bit set begin fetching from `pulp_entry`
+8. Each active PULP core writes `1` to `PULP_DONE` (`0x174C`) on completion
+9. After `PULP_NB_CORES_TO_WAIT` writes are received, `ClusterRegs` fires `pulp_done_irq` to the CV32 Event Unit
 
 ### GVSoC Ports (`ClusterRegs`)
 
@@ -442,13 +444,15 @@ The PULP binary is **embedded inside the CV32 ELF** rather than being loaded fro
 - **`spatz_clock_en`** (master, `wire<bool>`) — drives Spatz clock enable
 - **`spatz_start_irq`** (master, `wire<bool>`) — asserts Spatz start interrupt
 - **`spatz_done_irq`** (master, `wire<bool>`) — pulses when Spatz done
-- **`pulp_clock_en`** (master, `wire<bool>`) — drives PULP cluster clock enable
-- **`pulp_done_irq`** (master, `wire<bool>`) — pulses when all PULP cores done
+- **`pulp_clock_en_0` … `pulp_clock_en_N-1`** (master, `wire<bool>`) — one port per PULP core; each driven by the corresponding bit of the `PULP_CLK_EN` bitmask
+- **`pulp_done_irq`** (master, `wire<bool>`) — pulses when all waited PULP cores have written to `PULP_DONE`
 - **`pulp_entry`** (master, `wire<uint64_t>`) — PULP binary entry point, driven from `PULP_BINARY` write
 
 ### Configuration Property
 
-- **`nb_pulp_cores_to_wait`** — number of PULP done writes to collect before firing `pulp_done_irq`; must match the `nb_pulp_cores` attribute passed at simulation runtime
+- **`nb_pulp_cores`** — number of per-core `pulp_clock_en_i` ports to allocate; must match the `nb_pulp_cores` attribute passed at simulation runtime and the `pulp_cores` value used at SDK build time
+
+The number of cores to actually wait for is no longer a build-time constant: CV32 firmware programs it at runtime by writing to `PULP_NB_CORES_TO_WAIT` before enabling the clock, derived from the popcount of the `PULP_CLK_EN` bitmask.
 
 ---
 

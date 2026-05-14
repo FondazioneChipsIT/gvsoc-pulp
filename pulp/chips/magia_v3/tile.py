@@ -218,7 +218,7 @@ class MagiaV3Tile(gvsoc.systree.Component):
 
         if MagiaArch.PULP_ENABLE or MagiaArch.SPATZ_ENABLE:
             # Cluster control registers
-            cluster_regs = ClusterRegs(self, f'tile-{tid}-cluster-regs',nb_pulp_cores_to_wait=MagiaArch.NB_PULP_CORES)
+            cluster_regs = ClusterRegs(self, f'tile-{tid}-cluster-regs', nb_pulp_cores=MagiaArch.NB_PULP_CORES)
 
         # Data scratchpad
         l1_tcdm = MagiaTileTcdm(self, f'tile-{tid}-tcdm', tree, parser)
@@ -297,7 +297,7 @@ class MagiaV3Tile(gvsoc.systree.Component):
             # Bind: pulp core complex registers
             for pulp_id in range(0,tree.nb_pulp_cores):
                 cluster_regs.o_PULP_ENTRY(pulp_cores[pulp_id].i_ENTRY())
-                cluster_regs.o_PULP_CLK_EN(pulp_cores[pulp_id].i_FETCHEN())
+                cluster_regs.o_PULP_CLK_EN(pulp_id, pulp_cores[pulp_id].i_FETCHEN())
 
         # Bind: cv32 core data -> obi interconnect
         core_cv32.o_DATA(obi_xbar.i_INPUT())

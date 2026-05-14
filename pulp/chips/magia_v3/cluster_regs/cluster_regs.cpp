@@ -24,6 +24,8 @@
 #include <stdio.h>
 #include <cstring>
 #include <stdint.h>
+#include <string>
+#include <vector>
 
 /*****************************************************
 *                   Class Definition                 *
@@ -54,23 +56,25 @@ protected:
     vp::WireMaster<bool> spatz_start_irq;
     vp::WireMaster<bool> spatz_done_irq;
 
-    /* PULP cluster registers — offsets [0x40, 0x48]
-     *   0x40: PULP_CLK_EN  — write 1 to start the cluster
-     *   0x44: PULP_BINARY  — binary entry point, written by CV32 before enabling clock
-     *   0x48: PULP_DONE    — each PULP hart writes 1 here on completion
+    /* PULP cluster registers — offsets [0x40, 0x4C]
+     *   0x40: PULP_CLK_EN           — one-hot bitmask; bit N enables PULP core N
+     *   0x44: PULP_BINARY           — entry point, written by CV32 before enabling clock
+     *   0x48: PULP_NB_CORES_TO_WAIT — number of PULP harts CV32 expects to wait for
+     *   0x4C: PULP_DONE             — each PULP hart writes 1 here on completion
      */
     vp::reg_32 pulp_clock_en_reg;
     vp::reg_32 pulp_binary_reg;
+    vp::reg_32 pulp_nb_cores_to_wait_reg;
     vp::reg_32 pulp_done_reg;
 
-    vp::WireMaster<bool>     pulp_clock_en;
-    vp::WireMaster<bool>     pulp_done_irq;
-    vp::WireMaster<uint64_t> pulp_entry;
+    std::vector<vp::WireMaster<bool>> pulp_clock_en;
+    vp::WireMaster<bool>              pulp_done_irq;
+    vp::WireMaster<uint64_t>          pulp_entry;
 
     vp::ClockEvent *spatz_fsm_eu_event;
     vp::ClockEvent *pulp_fsm_eu_event;
 
-    int nb_pulp_cores_to_wait;
+    int nb_pulp_cores;
     int nb_recv_end_reqs;
 
     vp::Trace trace;
@@ -99,18 +103,26 @@ ClusterRegs::ClusterRegs(vp::ComponentConf &config)
 
     this->pulp_clock_en_reg.set(0x00000000);
     this->pulp_binary_reg.set(0x00000000);
+    this->pulp_nb_cores_to_wait_reg.set(0x00000000);
     this->pulp_done_reg.set(0x00000000);
 
-    this->nb_pulp_cores_to_wait = get_js_config()->get("nb_pulp_cores_to_wait")->get_int();
+    this->nb_pulp_cores    = get_js_config()->get("nb_pulp_cores")->get_int();
     this->nb_recv_end_reqs = 0;
 
     this->new_master_port("spatz_clock_en",  &this->spatz_clock_en,  this);
     this->new_master_port("spatz_start_irq", &this->spatz_start_irq, this);
     this->new_master_port("spatz_done_irq",  &this->spatz_done_irq,  this);
 
-    this->new_master_port("pulp_clock_en",  &this->pulp_clock_en,  this);
-    this->new_master_port("pulp_done_irq",  &this->pulp_done_irq,  this);
-    this->new_master_port("pulp_entry",     &this->pulp_entry,     this);
+    /* Allocate N per-core clock-enable ports then register them — resize must
+     * happen before taking element addresses so the vector does not reallocate. */
+    this->pulp_clock_en.resize(this->nb_pulp_cores);
+    for (int i = 0; i < this->nb_pulp_cores; i++) {
+        this->new_master_port("pulp_clock_en_" + std::to_string(i),
+                              &this->pulp_clock_en[i], this);
+    }
+
+    this->new_master_port("pulp_done_irq", &this->pulp_done_irq, this);
+    this->new_master_port("pulp_entry",    &this->pulp_entry,    this);
 
     this->spatz_fsm_eu_event = this->event_new(&ClusterRegs::spatz_fsm_handler);
     this->pulp_fsm_eu_event  = this->event_new(&ClusterRegs::pulp_fsm_handler);
@@ -138,9 +150,9 @@ vp::IoReqStatus ClusterRegs::req(vp::Block *__this, vp::IoReq *req)
 {
     ClusterRegs *_this = (ClusterRegs *)__this;
 
-    uint64_t offset  = req->get_addr();
-    uint8_t *data    = req->get_data();
-    uint64_t size    = req->get_size();
+    uint64_t offset   = req->get_addr();
+    uint8_t *data     = req->get_data();
+    uint64_t size     = req->get_size();
     bool     is_write = req->get_is_write();
 
     if (size != 4) {
@@ -249,23 +261,20 @@ vp::IoReqStatus ClusterRegs::req(vp::Block *__this, vp::IoReq *req)
     /* PULP cluster registers                                               */
     /* ------------------------------------------------------------------ */
 
-    else if (offset == 0x40) { /* PULP_CLK_EN */
+    else if (offset == 0x40) { /* PULP_CLK_EN — one-hot bitmask */
         if (is_write) {
             uint32_t val; memcpy(&val, data, 4);
             _this->pulp_clock_en_reg.set(val);
-            if (val == 0x01) {
-                _this->pulp_clock_en.sync(true);
-                _this->trace.msg("[PULP Regs][0x40] Clock enabled\n");
-            } else if (val == 0x00) {
-                _this->pulp_clock_en.sync(false);
-                _this->trace.msg("[PULP Regs][0x40] Clock disabled\n");
-            } else {
-                _this->trace.fatal("[PULP Regs][0x40] Unsupported clock enable value\n");
+            _this->trace.msg("[PULP Regs][0x40] Clock enable mask (0x%08x)\n", val);
+            for (int i = 0; i < _this->nb_pulp_cores; i++) {
+                bool en = (val >> i) & 0x1;
+                _this->pulp_clock_en[i].sync(en);
+                _this->trace.msg("[PULP Regs][0x40] Core %d clock %s\n", i, en ? "enabled" : "disabled");
             }
         } else {
             uint32_t val = _this->pulp_clock_en_reg.get();
             memcpy(data, &val, 4);
-            _this->trace.msg("[PULP Regs][0x40] Read clock enable (0x%08x)\n", val);
+            _this->trace.msg("[PULP Regs][0x40] Read clock enable mask (0x%08x)\n", val);
         }
     }
     else if (offset == 0x44) { /* PULP_BINARY — entry point written by CV32 before enabling clock */
@@ -280,19 +289,31 @@ vp::IoReqStatus ClusterRegs::req(vp::Block *__this, vp::IoReq *req)
             _this->trace.msg("[PULP Regs][0x44] Read binary entry point (0x%08x)\n", val);
         }
     }
-    else if (offset == 0x48) { /* PULP_DONE — each hart writes 1 on completion */
+    else if (offset == 0x48) { /* PULP_NB_CORES_TO_WAIT — programmed by CV32 firmware */
+        if (is_write) {
+            uint32_t val; memcpy(&val, data, 4);
+            _this->pulp_nb_cores_to_wait_reg.set(val);
+            _this->trace.msg("[PULP Regs][0x48] Nb cores to wait set (%u)\n", val);
+        } else {
+            uint32_t val = _this->pulp_nb_cores_to_wait_reg.get();
+            memcpy(data, &val, 4);
+            _this->trace.msg("[PULP Regs][0x48] Read nb cores to wait (%u)\n", val);
+        }
+    }
+    else if (offset == 0x4C) { /* PULP_DONE — each hart writes 1 on completion */
         if (is_write) {
             uint32_t val; memcpy(&val, data, 4);
             _this->pulp_done_reg.set(val);
             _this->nb_recv_end_reqs++;
-            _this->trace.msg("[PULP Regs][0x48] Done write %d/%d\n", _this->nb_recv_end_reqs, _this->nb_pulp_cores_to_wait);
-            if (_this->nb_recv_end_reqs == _this->nb_pulp_cores_to_wait) {
+            uint32_t nb_to_wait = _this->pulp_nb_cores_to_wait_reg.get();
+            _this->trace.msg("[PULP Regs][0x4C] Done write %d/%u\n", _this->nb_recv_end_reqs, nb_to_wait);
+            if (nb_to_wait > 0 && _this->nb_recv_end_reqs == (int)nb_to_wait) {
                 _this->nb_recv_end_reqs = 0;
                 _this->pulp_done_irq.sync(true);
                 _this->event_enqueue(_this->pulp_fsm_eu_event, 1);
             }
         } else {
-            _this->trace.fatal("[PULP Regs][0x48] Done register is write-only\n");
+            _this->trace.fatal("[PULP Regs][0x4C] Done register is write-only\n");
         }
     }
 

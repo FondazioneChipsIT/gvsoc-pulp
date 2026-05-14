@@ -23,19 +23,19 @@ class ClusterRegs(gvsoc.systree.Component):
     def __init__(self,
                 parent: gvsoc.systree.Component,
                 name: str,
-                nb_pulp_cores_to_wait: int):
+                nb_pulp_cores: int):
 
         super().__init__(parent, name)
 
         self.add_properties({
-            'nb_pulp_cores_to_wait' : nb_pulp_cores_to_wait,
+            'nb_pulp_cores' : nb_pulp_cores,
         })
 
         self.add_sources(['pulp/chips/magia_v3/cluster_regs/cluster_regs.cpp'])
 
     def i_INPUT(self) -> gvsoc.systree.SlaveItf:
         return gvsoc.systree.SlaveItf(self, 'input', signature='io')
-    
+
     def o_SPATZ_CLK_EN(self, itf: gvsoc.systree.SlaveItf):
         self.itf_bind('spatz_clock_en', itf, signature='wire<bool>')
 
@@ -45,9 +45,9 @@ class ClusterRegs(gvsoc.systree.Component):
     def o_SPATZ_DONE(self, itf: gvsoc.systree.SlaveItf):
         self.itf_bind('spatz_done_irq', itf, signature='wire<bool>')
 
-    def o_PULP_CLK_EN(self, itf: gvsoc.systree.SlaveItf):
-        self.itf_bind('pulp_clock_en', itf, signature='wire<bool>')
-    
+    def o_PULP_CLK_EN(self, core_id: int, itf: gvsoc.systree.SlaveItf):
+        self.itf_bind(f'pulp_clock_en_{core_id}', itf, signature='wire<bool>')
+
     def o_PULP_DONE(self, itf: gvsoc.systree.SlaveItf):
         self.itf_bind('pulp_done_irq', itf, signature='wire<bool>')
 
