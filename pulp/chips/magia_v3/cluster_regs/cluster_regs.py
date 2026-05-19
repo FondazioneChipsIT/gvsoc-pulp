@@ -45,11 +45,14 @@ class ClusterRegs(gvsoc.systree.Component):
     def o_SPATZ_DONE(self, itf: gvsoc.systree.SlaveItf):
         self.itf_bind('spatz_done_irq', itf, signature='wire<bool>')
 
-    def o_PULP_CLK_EN(self, core_id: int, itf: gvsoc.systree.SlaveItf):
-        self.itf_bind(f'pulp_clock_en_{core_id}', itf, signature='wire<bool>')
+    def o_PULP_CLK_EN(self, itf: gvsoc.systree.SlaveItf):
+        self.itf_bind('pulp_clock_en', itf, signature='wire<bool>')
 
     def o_PULP_DONE(self, itf: gvsoc.systree.SlaveItf):
         self.itf_bind('pulp_done_irq', itf, signature='wire<bool>')
+
+    def o_PULP_START(self, core_id: int, itf: gvsoc.systree.SlaveItf):
+        self.itf_bind(f'pulp_start_irq_{core_id}', itf, signature='wire<bool>')
 
     def o_PULP_ENTRY(self, itf: gvsoc.systree.SlaveItf):
         self.itf_bind('pulp_entry', itf, signature='wire<uint64_t>')

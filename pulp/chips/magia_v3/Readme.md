@@ -134,7 +134,7 @@ When the binary includes a PULP workload, pass the number of PULP cores via `nb_
   --attr magia_v3/nb_pulp_cores=8
 ```
 
-- **`--attr magia_v3/nb_pulp_cores`** — number of PULP cores to wait for at completion; must match the `pulp_cores` value used at SDK build time
+- **`--attr magia_v3/nb_pulp_cores`** — number of PULP cores instantiated per tile; must match the `pulp_cores` value used at SDK build time
 
 ---
 
@@ -353,9 +353,14 @@ Each tile has:
 Each tile is a **self-contained compute cluster** composed of:
 
 ### Compute Cores
-- **CV32** RISC-V core (always present) — acts as the tile controller
+
+- **CV32CtrlCore** (`ctrl_core/`) — tile controller; always present; uses `irq_external.cpp`
+  (`riscv_exceptions=False`), which exposes `irq_req`/`irq_ack` ports wired to the Event Unit
+  for vectored interrupt delivery
 - Optional **Snitch + Spatz** vector core
-- Optional **PULP cluster** — up to 8 RISC-V cores sharing a local L1
+- Optional **PULP cluster** — up to 8 **CV32PulpCore** workers (`pulp_core/`); each uses
+  `irq_riscv.cpp` (`riscv_exceptions=True`), which exposes the standard RISC-V `mei` port for
+  direct Machine External Interrupt delivery from `ClusterRegs` (bypasses the Event Unit)
 
 ### Local Memory
 - **TCDM (L1 scratchpad)**
@@ -383,7 +388,7 @@ Each tile is a **self-contained compute cluster** composed of:
 - Narrow+Wide NoC channels
 
 ### Event & Debug
-- Event Unit (interrupt routing, including PULP done IRQ)
+- Event Unit (interrupt routing for CV32CtrlCore; PULP done IRQ at `in_event_12_pe_0`)
 - UART (stdout)
 - GDB server support
 
@@ -395,64 +400,91 @@ Each tile is a **self-contained compute cluster** composed of:
 
 Each tile can optionally host a **PULP multi-core cluster**: up to 8 RISC-V cores sharing the tile L1 TCDM.
 
-The **CV32** core acts as the cluster controller:
-1. Embeds the PULP binary in its own ELF (via a dedicated linker section)
-2. Writes the PULP binary entry point address to the cluster control register
-3. Enables the PULP cluster clock
-4. Waits for a completion interrupt (PULP done IRQ)
+The **CV32CtrlCore** acts as the cluster controller and follows a two-phase protocol:
 
-The PULP cores are booted directly from the address written to `PULP_BINARY`, without any separate ELF loader.
+**Init phase** (`pulp_init`):
+1. Writes the PULP binary entry point to `PULP_BINARY`
+2. Broadcasts clock enable to **all** PULP cores via `PULP_CLK_EN` (write `1`)
+3. Polls `PULP_READY` until all cores have booted and are waiting for tasks
+
+**Dispatch phase** (`pulp_run_task`):
+1. Writes the task function address to `PULP_TASKBIN` and an optional data pointer to `PULP_DATA`
+2. Sets `PULP_NB_CORES_TO_WAIT = popcount(core_mask)`
+3. Writes the one-hot `core_mask` to `PULP_START` — `ClusterRegs` fires a 1-cycle MEI edge pulse to each selected core
+4. Polls `PULP_START` until it clears to `0` (cleared when all selected cores ACK before executing their task)
+5. Calls `eu_pulp_wait()` to wait for the DONE IRQ from the Event Unit
+
+Each woken PULP core (from its MEI interrupt handler):
+1. Reads `PULP_TASKBIN` and `PULP_DATA`
+2. **ACKs** by writing `0` to `PULP_START` — before calling the task
+3. Calls the task function with the data pointer as the first argument
+4. After the task returns, writes `1` to `PULP_DONE`
+
+`ClusterRegs` counts ACKs and DONE writes separately:
+- When all `PULP_NB_CORES_TO_WAIT` ACKs received → clears `PULP_START` register (unblocks CV32 poll)
+- When all `PULP_NB_CORES_TO_WAIT` DONE writes received → fires `pulp_done_irq` to the CV32 Event Unit (unblocks `eu_pulp_wait`)
 
 ### PULP Cluster Control Registers
 
-The cluster control register block (`ClusterRegs`) is memory-mapped at **`PULP_CTRL_BASE = 0x1740`** (tile-relative).
+The cluster control register block (`ClusterRegs`) is memory-mapped at **`CLUSTER_CTRL_BASE = 0x1700`** (tile-relative). All offsets below are from `CLUSTER_CTRL_BASE`.
 
 #### Spatz sub-block — offsets `[0x00, 0x18]`
 
 - **`0x00` `SPATZ_CLK_EN`** (R/W) — write `1` to enable Snitch+Spatz clock, `0` to disable
 - **`0x04` `SPATZ_READY`** (R/W) — Snitch+Spatz ready status
-- **`0x08` `SPATZ_START`** (R/W) — write `1` to assert start IRQ to Spatz
+- **`0x08` `SPATZ_START`** (R/W) — write `1` to assert start IRQ to Spatz (1-cycle pulse)
 - **`0x0C` `SPATZ_TASKBIN`** (R/W) — task binary descriptor for Spatz
 - **`0x10` `SPATZ_DATA`** (R/W) — data descriptor for Spatz
 - **`0x14` `SPATZ_RETURN`** (R/W) — return value from Spatz task
 - **`0x18` `SPATZ_DONE`** (W) — write `1` when Spatz is done; fires `spatz_done_irq`
 
-#### PULP sub-block — offsets `[0x40, 0x4C]`
+#### PULP sub-block — offsets `[0x40, 0x5C]`
 
-- **`0x40` `PULP_CLK_EN`** (R/W) — one-hot bitmask; bit N set to `1` enables PULP core N independently
-- **`0x44` `PULP_BINARY`** (R/W) — PULP binary entry point; CV32 writes `_pulp_binary_start` here before enabling the clock
-- **`0x48` `PULP_NB_CORES_TO_WAIT`** (R/W) — number of PULP harts CV32 expects to wait for; written by firmware before enabling cores
-- **`0x4C` `PULP_DONE`** (W) — each PULP hart writes `1` here on completion; fires `pulp_done_irq` after `PULP_NB_CORES_TO_WAIT` writes received
+- **`0x40` `PULP_CLK_EN`** (R/W) — write `1` to broadcast clock enable to **all** PULP cores simultaneously; write `0` to disable
+- **`0x44` `PULP_BINARY`** (R/W) — PULP binary entry point; CV32 writes `_pulp_binary_start` here before enabling the clock; drives the `pulp_entry` wire to all PULP cores
+- **`0x48` `PULP_NB_CORES_TO_WAIT`** (R/W) — number of PULP cores expected to ACK and complete; written by `pulp_run_task()` at dispatch time
+- **`0x4C` `PULP_DONE`** (W) — each PULP core writes `1` here after its task returns; `pulp_done_irq` fires after `PULP_NB_CORES_TO_WAIT` writes received
+- **`0x50` `PULP_TASKBIN`** (R/W) — task function address; written by CV32 before dispatch; read by PULP cores in their interrupt handler
+- **`0x54` `PULP_DATA`** (R/W) — opaque data pointer passed as first argument to the task function
+- **`0x58` `PULP_START`** (R/W) — one-hot core dispatch bitmask; CV32 writes the mask to fire per-core MEI edge pulses; PULP cores write `0` (ACK before task); cleared when all `PULP_NB_CORES_TO_WAIT` ACKs received
+- **`0x5C` `PULP_READY`** (R) — incremented by each PULP core after boot; CV32 polls until equal to `NB_PULP_CORES`
 
 ### PULP Binary Delivery
 
 The PULP binary is **embedded inside the CV32 ELF** rather than being loaded from a separate file:
 
-1. The PULP task is compiled independently as **position-independent code (PIC)**
-2. The raw binary is converted to a C array header (`<test_name>_bin.h`) and placed in the `.pulp_binary` linker section of the CV32 ELF
-3. The `ctrl_core_loader` loads the entire CV32 ELF (including the embedded PULP binary) into instruction RAM at simulation start
-4. At runtime, CV32 writes the `_pulp_binary_start` symbol address to `PULP_BINARY` (`0x1744`)
-5. `ClusterRegs` captures this address and drives the `pulp_entry` wire (`wire<uint64_t>`) to all PULP cores
-6. CV32 writes the number of cores to wait for to `PULP_NB_CORES_TO_WAIT` (`0x1748`)
-7. CV32 writes a one-hot bitmask to `PULP_CLK_EN` (`0x1740`) — only the cores with their bit set begin fetching from `pulp_entry`
-8. Each active PULP core writes `1` to `PULP_DONE` (`0x174C`) on completion
-9. After `PULP_NB_CORES_TO_WAIT` writes are received, `ClusterRegs` fires `pulp_done_irq` to the CV32 Event Unit
+1. The PULP task is compiled independently as position-independent code (PIC)
+2. The raw binary is converted to a C array header and placed in the `.pulp_binary` linker section of the CV32 ELF
+3. At simulation start, the `ctrl_core_loader` loads the entire CV32 ELF (including the embedded PULP binary) into instruction RAM
+4. **Init phase:**
+   - CV32 writes `_pulp_binary_start` to `PULP_BINARY` (`0x1744`) → drives `pulp_entry` to all PULP cores
+   - CV32 writes `1` to `PULP_CLK_EN` (`0x1740`) → all PULP cores begin fetching from `pulp_entry`
+   - All cores execute `_start`: compute local hart ID, set up per-hart stack, clear BSS (core 0 only), enable MEIE+MIE, write `1` to `PULP_READY` (`0x175C`), enter WFI
+   - CV32 polls `PULP_READY` until it equals `NB_PULP_CORES`
+5. **Dispatch phase (per `pulp_run_task` call):**
+   - CV32 writes task address to `PULP_TASKBIN` (`0x1750`) and data pointer to `PULP_DATA` (`0x1754`)
+   - CV32 writes `popcount(mask)` to `PULP_NB_CORES_TO_WAIT` (`0x1748`)
+   - CV32 writes one-hot `core_mask` to `PULP_START` (`0x1758`)
+   - `ClusterRegs` fires a 1-cycle MEI edge pulse to each selected core; deasserts after 1 clock cycle
+   - Each woken core: reads TASKBIN and DATA → writes `0` to PULP_START (ACK) → calls task → writes `1` to PULP_DONE
+   - `ClusterRegs`: last ACK clears `PULP_START` → CV32 exits `while (PULP_START != 0)`
+   - `ClusterRegs`: last DONE fires `pulp_done_irq` → CV32 Event Unit wakes `eu_pulp_wait()`
+   - All woken cores `mret` back to `dispatcher_loop` (WFI), ready for the next dispatch
 
 ### GVSoC Ports (`ClusterRegs`)
 
 - **`input`** (slave, IO) — MMIO register access
 - **`spatz_clock_en`** (master, `wire<bool>`) — drives Spatz clock enable
-- **`spatz_start_irq`** (master, `wire<bool>`) — asserts Spatz start interrupt
+- **`spatz_start_irq`** (master, `wire<bool>`) — asserts Spatz start interrupt (1-cycle pulse)
 - **`spatz_done_irq`** (master, `wire<bool>`) — pulses when Spatz done
-- **`pulp_clock_en_0` … `pulp_clock_en_N-1`** (master, `wire<bool>`) — one port per PULP core; each driven by the corresponding bit of the `PULP_CLK_EN` bitmask
-- **`pulp_done_irq`** (master, `wire<bool>`) — pulses when all waited PULP cores have written to `PULP_DONE`
+- **`pulp_clock_en`** (master, `wire<bool>`) — single broadcast wire; fan-out to all PULP cores' fetch-enable simultaneously
+- **`pulp_start_irq_0` … `pulp_start_irq_N-1`** (master, `wire<bool>`) — one port per PULP core; each fires a 1-cycle edge pulse when the corresponding bit of `PULP_START` is set
+- **`pulp_done_irq`** (master, `wire<bool>`) — pulses when all `PULP_NB_CORES_TO_WAIT` DONE writes received; wired to `in_event_12_pe_0` of the CV32 Event Unit
 - **`pulp_entry`** (master, `wire<uint64_t>`) — PULP binary entry point, driven from `PULP_BINARY` write
 
 ### Configuration Property
 
-- **`nb_pulp_cores`** — number of per-core `pulp_clock_en_i` ports to allocate; must match the `nb_pulp_cores` attribute passed at simulation runtime and the `pulp_cores` value used at SDK build time
-
-The number of cores to actually wait for is no longer a build-time constant: CV32 firmware programs it at runtime by writing to `PULP_NB_CORES_TO_WAIT` before enabling the clock, derived from the popcount of the `PULP_CLK_EN` bitmask.
+- **`nb_pulp_cores`** — number of PULP cores (`CV32PulpCore` instances) and `pulp_start_irq_i` ports to allocate; must match the `nb_pulp_cores` attribute at simulation runtime and the `pulp_cores` value at SDK build time
 
 ---
 
@@ -479,7 +511,7 @@ Exact addresses are defined in `arch.py`.
 - **`0x0200`** iDMA CTRL — DMA control
 - **`0x0600`** FSYNC CTRL — fractal sync control
 - **`0x0700`** Event Unit — interrupts and events
-- **`0x1740`** Cluster CTRL — cluster control regs (Spatz + PULP)
+- **`0x1700`** Cluster CTRL — cluster control regs (Spatz + PULP)
 - Stack — tile-relative, per-core stack area
 - L1 (TCDM) — tile-relative, tile private scratchpad
 - **`0xC000_0000`** L2 — shared memory via NoC
@@ -546,6 +578,11 @@ pulp/pulp/chips/magia_v3/
 ├── cluster_regs/                  # Cluster control registers (Spatz + PULP)
 │   ├── cluster_regs.cpp           # C++ model implementation
 │   └── cluster_regs.py            # Python systree binding
+├── ctrl_core/                     # CV32 control core (riscv_exceptions=False, irq_req/irq_ack)
+│   ├── core.py                    # CV32CtrlCore class
+│   └── hierarchical_cache.py      # Instruction cache for the control core
+├── pulp_core/                     # PULP worker cores (riscv_exceptions=True, mei port)
+│   └── core.py                    # CV32PulpCore class
 ├── fractal_sync/                  # Fractal synchronization module
 ├── kill_module/                   # Simulation termination module
 │   ├── kill_module.py

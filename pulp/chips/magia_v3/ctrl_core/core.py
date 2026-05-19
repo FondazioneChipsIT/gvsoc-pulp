@@ -49,7 +49,7 @@ class CV32CoreTest(cpu.iss.riscv.RiscvCommon):
 '''
 
 # Basic rv32 core
-class CV32CoreTest(cpu.iss.riscv.RiscvCommon):
+class CV32CtrlCore(cpu.iss.riscv.RiscvCommon):
     def __init__(self, parent: gvsoc.systree.Component, name: str, binaries: list=[],
                  fetch_enable: bool=False, boot_addr: int=0, timed: bool=True,
                  core_id: int=0):
@@ -72,6 +72,6 @@ class CV32CoreTest(cpu.iss.riscv.RiscvCommon):
         # TODO check later
         self.add_c_flags([
             "-DPIPELINE_STALL_THRESHOLD=1",
-            "-DCONFIG_ISS_CORE_DIR=pulp/chips/magia_v3/cv32",
+            "-DCONFIG_ISS_CORE_DIR=pulp/chips/magia_v3/ctrl_core",
             "-DCONFIG_GVSOC_ISS_HWLOOP=1",
         ])

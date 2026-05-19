@@ -31,10 +31,11 @@ from pulp.cluster.l1_interleaver import L1_interleaver
 from pulp.light_redmule.hwpe_interleaver import HWPEInterleaver
 from pulp.snitch.snitch_cluster.dma_interleaver import DmaInterleaver
 from pulp.snitch.hierarchical_cache import Hierarchical_cache
-from pulp.chips.magia_v3.cv32.hierarchical_cache import CV32_Hierarchical_cache
+from pulp.chips.magia_v3.ctrl_core.hierarchical_cache import CV32_Hierarchical_cache
 
 from pulp.chips.magia_v3.arch import *
-from pulp.chips.magia_v3.cv32.core import CV32CoreTest
+from pulp.chips.magia_v3.ctrl_core.core import CV32CtrlCore
+from pulp.chips.magia_v3.pulp_core.core import CV32PulpCore
 from pulp.light_redmule.light_redmule import LightRedmule
 from pulp.idma.snitch_dma import SnitchDma
 from pulp.chips.magia_v3.fractal_sync_mm_ctrl.fractal_sync_mm_ctrl import FSync_mm_ctrl
@@ -122,7 +123,7 @@ class MagiaV3Tile(gvsoc.systree.Component):
                         "remove_offset": MagiaArch.EVENT_UNIT_ADDR_START
                     },
                     "config": {
-                        "nb_core": 1 + tree.nb_pulp_cores,
+                        "nb_core": 1,
                         "properties": {
                             "dispatch": {"size": 8},
                             "mutex": {"nb_mutexes": 0},
@@ -169,7 +170,7 @@ class MagiaV3Tile(gvsoc.systree.Component):
         super().__init__(parent, name)
         
         # Core model from pulp cores
-        core_cv32 = CV32CoreTest(self, f'tile-{tid}-cv32-core',core_id=tid)
+        core_cv32 = CV32CtrlCore(self, f'tile-{tid}-cv32-core',core_id=tid)
 
         # Instruction cache (from snitch cluster model)
         cv32_i_cache = CV32_Hierarchical_cache(self, f'tile-{tid}-cv32-icache', nb_cores=1, has_cc=0, l1_line_size_bits=4)
@@ -207,9 +208,9 @@ class MagiaV3Tile(gvsoc.systree.Component):
 
         if MagiaArch.PULP_ENABLE:
             # Core model from pulp cores
-            pulp_cores:List[CV32CoreTest] = []
+            pulp_cores:List[CV32PulpCore] = []
             for pulp_id in range(0,tree.nb_pulp_cores):
-                pulp_cores.append(CV32CoreTest(self, f'tile-{tid}-pulp-cv32-core-{pulp_id}',core_id=tree.nb_clusters*2 + tid*tree.nb_pulp_cores + pulp_id))
+                pulp_cores.append(CV32PulpCore(self, f'tile-{tid}-pulp-cv32-core-{pulp_id}',core_id=tree.nb_clusters*2 + tid*tree.nb_pulp_cores + pulp_id))
                 # reverse formula to get cluster id: x=pulp_id-2*tree.nb_clusters; cluster_id=x/tree.nb_pulp_cores
                 # reverse formula to get local pulp id: x mod tree.nb_pulp_cores
 
@@ -297,7 +298,8 @@ class MagiaV3Tile(gvsoc.systree.Component):
             # Bind: pulp core complex registers
             for pulp_id in range(0,tree.nb_pulp_cores):
                 cluster_regs.o_PULP_ENTRY(pulp_cores[pulp_id].i_ENTRY())
-                cluster_regs.o_PULP_CLK_EN(pulp_id, pulp_cores[pulp_id].i_FETCHEN())
+                cluster_regs.o_PULP_CLK_EN(pulp_cores[pulp_id].i_FETCHEN())
+                cluster_regs.o_PULP_START(pulp_id, pulp_cores[pulp_id].i_IRQ(11))
 
         # Bind: cv32 core data -> obi interconnect
         core_cv32.o_DATA(obi_xbar.i_INPUT())
@@ -416,11 +418,6 @@ class MagiaV3Tile(gvsoc.systree.Component):
         self.bind(event_unit, 'clock_0', core_cv32, 'clock')
         self.bind(core_cv32, 'irq_ack', event_unit, 'irq_ack_0')
         self.bind(event_unit, 'irq_req_0', core_cv32, 'irq_req')
-        if MagiaArch.PULP_ENABLE:
-            for pulp_id in range(0,tree.nb_pulp_cores):
-                self.bind(event_unit, f'clock_{1+pulp_id}', pulp_cores[pulp_id], 'clock')
-                self.bind(pulp_cores[pulp_id], 'irq_ack', event_unit, f'irq_ack_{1+pulp_id}')
-                self.bind(event_unit, f'irq_req_{1+pulp_id}', pulp_cores[pulp_id], 'irq_req')
         self.bind(idma_mm_ctrl, 'idma0_done_irq', event_unit, 'in_event_2_pe_0')
         self.bind(idma_mm_ctrl, 'idma1_done_irq', event_unit, 'in_event_3_pe_0')
         if MagiaArch.SPATZ_ENABLE:
