@@ -28,9 +28,10 @@ from gvsoc.systree import Component
 import pulp.ara.ara_v2
 import cpu.iss.isa_gen.isa_riscv_gen
 from cpu.iss_v2.riscv import (Arch, ExecInOrder, Regfile, PrefetchSingleLine, Offload, Irq,
-                              IrqExternal)
+                              IrqExternal, Lsu, LsuV2)
 from pulp.cpu.iss.spatz_config import SpatzConfig
 from cpu.iss_v2.riscv import RiscvCommon, IssModule
+from gvsoc.signature import IoV2SingleReq
 
 
 isa_instances: dict[str,Isa] = {}
@@ -43,15 +44,19 @@ class Spatz(RiscvCommon):
             config: SpatzConfig
         ):
 
-        isa_instance: Isa | None = isa_instances.get(config.isa)
+        # The LSU flavour (io v1 vs io_v2) adds defines to the generated ISA,
+        # so cores differing only by vlsu_v2 cannot share an Isa instance —
+        # key and name the ISA per flavour.
+        isa_key = f"{config.isa}_iov2" if config.vlsu_v2 else config.isa
+        isa_instance: Isa | None = isa_instances.get(isa_key)
 
-        if isa_instances.get(config.isa) is None:
+        if isa_instance is None:
 
             extensions = [ Xdma(), Xf16(), Xf16alt(), Xf8(), XfvecSnitch(), Xfaux() ]
 
-            isa_instance = cpu.iss.isa_gen.isa_riscv_gen.RiscvIsa("spatz_" + config.isa,
+            isa_instance = cpu.iss.isa_gen.isa_riscv_gen.RiscvIsa("spatz_" + isa_key,
                 config.isa, extensions=extensions)
-            isa_instances[config.isa] = isa_instance
+            isa_instances[isa_key] = isa_instance
 
             pulp.ara.ara_v2.extend_isa(isa_instance)
 
@@ -64,14 +69,23 @@ class Spatz(RiscvCommon):
             'irq': IrqExternal() if config.irq == 'external' else Irq()
         }
 
+        # The io_v2 VLSU variant pulls io_v2.hpp into the whole ISS translation
+        # unit (see types.hpp), so the scalar data LSU has to switch to its v2
+        # variant too — the v1 Lsu code uses v1-only API (arg stack,
+        # IO_REQ_OK, get_resp_port, ...) that does not exist in io_v2.hpp.
+        modules['lsu'] = LsuV2() if config.vlsu_v2 else Lsu()
+
         super().__init__(parent, name, config=config, isa=isa_instance, modules=modules)
 
         self.add_sources([
             'cpu/iss_v2/src/cores/spatz/spatz.cpp',
         ])
 
+        self._vlsu_v2 = config.vlsu_v2
+
         pulp.ara.ara_v2.attach(self, config.vlen, nb_lanes=config.nb_lanes, use_spatz=True,
-            lane_width=config.lane_width)
+            lane_width=config.lane_width, vlsu_v2=config.vlsu_v2,
+            nb_outstanding_reqs=config.nb_outstanding_reqs)
 
 
     def o_BARRIER_REQ(self, itf: gvsoc.systree.SlaveItf):
@@ -89,7 +103,10 @@ class Spatz(RiscvCommon):
         slave: gvsoc.systree.SlaveItf
             Slave interface
         """
-        self.itf_bind(f'vlsu_{port}', itf, signature='io')
+        # Single-req initiator: each VLSU lane access is one request answered
+        # by a single-beat response routed back by identity.
+        self.itf_bind(f'vlsu_{port}', itf,
+            signature=IoV2SingleReq() if getattr(self, '_vlsu_v2', False) else 'io')
 
     @override
     def gen_gui(self, parent_signal: Signal) -> Signal:

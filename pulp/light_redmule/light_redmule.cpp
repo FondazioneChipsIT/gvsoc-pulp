@@ -15,9 +15,11 @@
  */
 
 /*
- * Authors: Chi     Zhang, ETH Zurich (chizhang@iis.ee.ethz.ch)
-            Lorenzo Zuolo, Chips-IT   (lorenzo.zuolo@chips.it)
-            Alex Marchioni, Chips-IT   (alex.marchioni@chips.it)
+ * Authors: Chi Zhang,       ETH Zurich                       chizhang@iis.ee.ethz.ch
+            Lorenzo Zuolo,   Chips-IT                         lorenzo.zuolo@chips.it
+            Alex Marchioni,  Chips-IT                         alex.marchioni@chips.it
+            Francesco Conti, University of Bologna & Chips-IT f.conti@unibo.it
+            Yinrong Li,      ETH Zurich                       yinrli@student.ethz.ch
  * Note:
  *      Here we only support (No Compute/ INT16 / UINT16 / FP16 ) for matrix multiply
  */
@@ -36,6 +38,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <math.h>
+#include <vp/register.hpp>
+#include <climits>
 
 #include <cpu/iss/include/offload.hpp>
 #include <cpu/iss/flexfloat/flexfloat.h>
@@ -105,7 +109,11 @@ public:
 
     uint32_t op_foramt_parser(uint32_t op_format);
 
-    vp::IoReqStatus send_tcdm_req();
+    // HWPE control-register protocol (ACQUIRE / COMMIT_TRIGGER / SOFT_CLEAR)
+    int32_t  acquire();
+    void     commit(bool start);
+    void     start_next_job();
+    void     soft_clear(uint32_t value);
     void init_redmule_meta_data();
     uint32_t tmp_next_addr();
     uint32_t next_addr();
@@ -118,7 +126,27 @@ public:
     uint32_t get_storing_access_block_number();
     uint32_t get_routine_to_storing_latency();
     void     process_iter_instruction();
+    void     process_iter_instruction(uint8_t *buf, uint32_t instr);
     void     process_compute();
+
+    // TCDM async response/grant callbacks (only fire for PENDING/DENIED).
+    static void tcdm_response(vp::Block *__this, vp::IoReq *req);
+    static void tcdm_grant(vp::Block *__this, vp::IoReq *req);
+    int  alloc_req_slot();
+    void free_req_slot(int id, int64_t available_at);
+    // Iteration end-condition: all slots reusable at the current cycle.
+    bool all_slots_free();
+    // Issue-side capacity gate mirroring the old queue-size check.
+    bool issue_slot_gate_ok();
+    // Issue one request; returns false only if the slot pool is exhausted.
+    bool issue_request(uint32_t addr, uint32_t instr, bool is_write, uint32_t size);
+    // Shared response handler (sync OK and async paths). free_cycle is when
+    // the slot becomes reusable.
+    void handle_response(int slot_id, int64_t free_cycle);
+    // Apply the data movement using the values captured at issue time.
+    void apply_response_data(uint8_t *buf, uint32_t instr, uint32_t dst_offset, uint32_t cutoff);
+    // Fired when the last W burst lands: run matmul and clear w_buffer.
+    void run_compute_and_drain();
     void     matmul_fp16(fp16 * z, fp16 * y, fp16 * x, fp16 * w, uint16_t m_size, uint16_t n_size, uint16_t k_size);
 
     vp::Trace           trace;
@@ -136,15 +164,31 @@ public:
     vp::IoReq *         redmule_query;
     vp::IoReq*          tcdm_req;
     vp::ClockEvent *    fsm_event;
-    vp::reg_32          state;
+    vp::Register<uint32_t>  reg_fsm_state;
+    vp::Register<uint32_t>  reg_busy;
     uint32_t            tcdm_block_total;
     uint32_t            fsm_counter;
     uint32_t            fsm_timestamp;
-    std::queue<uint32_t> pending_req_queue;
     int64_t             timer_start;
     int64_t             cycle_start;
     int64_t             total_runtime;
     int64_t             num_matmul;
+
+    //HWPE job queue (depth 2, double-buffered)
+    uint8_t             job_id_counter;   //wraps at 256
+    int                 job_state;        //0 = free to acquire, -2 = acquired-not-committed
+    int                 job_pending;      //0..2 committed-but-not-finished jobs
+    int                 cxt_cfg_ptr;      //context slot software is configuring
+    int                 cxt_use_ptr;      //context slot the FSM is executing
+    int                 cxt_job_id[2];    //job id per context slot, -1 = empty
+    int                 running_job_id;   //current/last running job id, -1 = none yet
+    uint32_t            cxt_m_size[2];
+    uint32_t            cxt_n_size[2];
+    uint32_t            cxt_k_size[2];
+    uint32_t            cxt_x_addr[2];
+    uint32_t            cxt_w_addr[2];
+    uint32_t            cxt_y_addr[2];
+    uint32_t            cxt_compute_able[2];
 
     //redmule configuration
     uint32_t            tcdm_bank_width;
@@ -208,10 +252,32 @@ public:
     uint8_t *           access_buffer;
     uint8_t *           y_buffer_preload;
     uint8_t *           w_buffer;
-    uint8_t *           x_buffer;
+    uint8_t *           x_buffer;       // current k-iter (read by compute)
+    uint8_t *           x_buffer_next;  // next k-iter (written by LOAD_X resp)
     uint8_t *           z_buffer_compute;
     uint8_t *           z_buffer_previos;
-    
+
+    // Per-slot outstanding-request state (LSU-style, one field per slot
+    // captures both sync OK latency timing and async PENDING tracking).
+    struct ReqSlot {
+        vp::IoReq *     req;
+        uint8_t *       buf;
+        uint32_t        instr;
+        // Captured at issue time; never read from live FSM state at response
+        // time, so OOO responses are safe.
+        uint32_t        dst_offset;
+        uint32_t        cutoff;
+        // <=now: free. >now (finite): sync OK in-flight until that cycle.
+        // INT64_MAX: async PENDING/DENIED awaiting callback.
+        int64_t         available_at;
+    };
+    std::vector<ReqSlot> req_slots;
+    bool                request_denied;  // last issue was denied, await grant
+    // Compute fires when w_outstanding_count reaches 0 with compute_pending
+    // set. X uses a double-buffer (x_buffer_next), swapped at iter_done.
+    uint32_t            w_outstanding_count;
+    bool                compute_pending;
+
 };
 
 extern "C" vp::Component *gv_new(vp::ComponentConf &config)
@@ -220,7 +286,9 @@ extern "C" vp::Component *gv_new(vp::ComponentConf &config)
 }
 
 LightRedmule::LightRedmule(vp::ComponentConf &config)
-    : vp::Component(config)
+    : vp::Component(config),
+    reg_fsm_state(*this, "fsm_state", 32, true, IDLE),
+    reg_busy(*this, "busy", 1, true, 0)
 {
     //Initialize interface
     this->traces.new_trace("trace", &this->trace, vp::DEBUG);
@@ -299,16 +367,18 @@ LightRedmule::LightRedmule(vp::ComponentConf &config)
     this->iter_y_row_ptr    = 0;
     this->iter_z_row_ptr    = 0;
 
-    //Initialize Buffers
-    this->access_buffer     = new uint8_t [this->bandwidth * 2];
-    this->y_buffer_preload  = new uint8_t [this->LOCAL_BUFFER_H * this->LOCAL_BUFFER_W * this->elem_size];
-    this->w_buffer          = new uint8_t [this->LOCAL_BUFFER_N * this->LOCAL_BUFFER_W * this->elem_size];
-    this->x_buffer          = new uint8_t [this->LOCAL_BUFFER_H * this->LOCAL_BUFFER_N * this->elem_size];
-    this->z_buffer_compute  = new uint8_t [this->LOCAL_BUFFER_H * this->LOCAL_BUFFER_W * this->elem_size];
-    this->z_buffer_previos  = new uint8_t [this->LOCAL_BUFFER_H * this->LOCAL_BUFFER_W * this->elem_size];
+    // Zero-init buffers (edge-case rows must start clean).
+    this->access_buffer     = new uint8_t [this->bandwidth * 2]();
+    this->y_buffer_preload  = new uint8_t [this->LOCAL_BUFFER_H * this->LOCAL_BUFFER_W * this->elem_size]();
+    this->w_buffer          = new uint8_t [this->LOCAL_BUFFER_N * this->LOCAL_BUFFER_W * this->elem_size]();
+    this->x_buffer          = new uint8_t [this->LOCAL_BUFFER_H * this->LOCAL_BUFFER_N * this->elem_size]();
+    this->x_buffer_next     = new uint8_t [this->LOCAL_BUFFER_H * this->LOCAL_BUFFER_N * this->elem_size]();
+    this->z_buffer_compute  = new uint8_t [this->LOCAL_BUFFER_H * this->LOCAL_BUFFER_W * this->elem_size]();
+    this->z_buffer_previos  = new uint8_t [this->LOCAL_BUFFER_H * this->LOCAL_BUFFER_W * this->elem_size]();
 
     //Initialize FSM
-    this->state.set(IDLE);
+    this->reg_fsm_state.set(IDLE);
+    this->reg_busy.set(0);
     this->redmule_query     = NULL;
     this->tcdm_req          = this->tcdm_itf.req_new(0, 0, 0, 0);
     this->fsm_event         = this->event_new(&LightRedmule::fsm_handler);
@@ -319,8 +389,51 @@ LightRedmule::LightRedmule(vp::ComponentConf &config)
     this->cycle_start       = 0;
     this->total_runtime     = 0;
     this->num_matmul        = 0;
-    
-    this->trace.msg("[LightRedmule] Model Initialization Done!\n");
+
+    //Initialize HWPE job queue
+    this->job_id_counter    = 0;
+    this->job_state         = 0;
+    this->job_pending       = 0;
+    this->cxt_cfg_ptr       = 0;
+    this->cxt_use_ptr       = 0;
+    this->cxt_job_id[0]     = -1;
+    this->cxt_job_id[1]     = -1;
+    this->running_job_id    = -1;
+    for (int i = 0; i < 2; i++) {
+        this->cxt_m_size[i]       = 0;
+        this->cxt_n_size[i]       = 0;
+        this->cxt_k_size[i]       = 0;
+        this->cxt_x_addr[i]       = 0;
+        this->cxt_w_addr[i]       = 0;
+        this->cxt_y_addr[i]       = 0;
+        this->cxt_compute_able[i] = 0;
+    }
+
+    // Slot pool: queue_depth+1 entries; each owns an IoReq + bandwidth
+    // buffer. arg(0) = slot id, arg(1) = back-pointer for callbacks.
+    this->request_denied      = false;
+    this->w_outstanding_count = 0;
+    this->compute_pending     = false;
+    this->tcdm_itf.set_resp_meth(&LightRedmule::tcdm_response);
+    this->tcdm_itf.set_grant_meth(&LightRedmule::tcdm_grant);
+
+    int pool_size = (int)this->queue_depth + 1;
+    this->req_slots.resize(pool_size);
+    for (int i = 0; i < pool_size; i++)
+    {
+        ReqSlot &slot = this->req_slots[i];
+        slot.req          = this->tcdm_itf.req_new(0, 0, 0, 0);
+        slot.buf          = new uint8_t[this->bandwidth];
+        slot.instr        = 0;
+        slot.dst_offset   = 0;
+        slot.cutoff       = 0;
+        slot.available_at = 0;
+        slot.req->arg_alloc(2);
+        *((int *)slot.req->arg_get(0))    = i;
+        *((void **)slot.req->arg_get(1))  = (void *)this;
+    }
+
+    this->trace.msg("[LightRedmule] Model Initialization Done! (slot pool size=%d)\n", pool_size);
 }
 
 void LightRedmule::init_redmule_meta_data(){
@@ -362,6 +475,12 @@ void LightRedmule::init_redmule_meta_data(){
     this->iter_w_row_ptr = 0;
     this->iter_y_row_ptr = 0;
     this->iter_z_row_ptr = 0;
+
+    // Reset per-matmul slot-pool state defensively.
+    this->w_outstanding_count = 0;
+    this->compute_pending     = false;
+    int64_t now = this->clock.get_cycles();
+    for (auto &slot : this->req_slots) slot.available_at = now;
 
     this->ideal_runtime = 1.0 * (this->m_size * this->n_size * this->k_size)/( 1.0 * this->ce_height * this->ce_width);
 }
@@ -545,10 +664,18 @@ void LightRedmule::process_compute(){
 }
 
 void LightRedmule::process_iter_instruction(){
+    // Sync wrapper: reuse the global access_buffer and the FSM-current
+    // iter_instruction. The async path calls the overload below with a
+    // per-slot buffer and the instruction captured at issue time, since
+    // iter_instruction may have advanced by the time the response fires.
+    this->process_iter_instruction(this->access_buffer, this->iter_instruction);
+}
+
+void LightRedmule::process_iter_instruction(uint8_t *buf, uint32_t instr){
 
     /*
-                      buffer_w, 
-                      k_size, 
+                      buffer_w,
+                      k_size,
                       iter_j
             buffer_n|------
             n_size  |  W  |
@@ -563,7 +690,7 @@ void LightRedmule::process_iter_instruction(){
     uint32_t buffer_w_byte = this->ce_width * (this->ce_pipe + 1) * this->elem_size;
 
     uint32_t _k = this->iter_k + 1;
-    if ((_k == this->x_row_tiles) || this->state.get() == PRELOAD)
+    if ((_k == this->x_row_tiles) || this->reg_fsm_state.get() == PRELOAD)
     {
         _k = 0;
     }
@@ -574,7 +701,7 @@ void LightRedmule::process_iter_instruction(){
     uint32_t w_cutoff = w_leftover_byte < buffer_w_byte ? w_leftover_byte : buffer_w_byte;
 
     uint32_t _j = this->iter_j + 1;
-    if ((_j == this->z_row_tiles) || this->state.get() == PRELOAD)
+    if ((_j == this->z_row_tiles) || this->reg_fsm_state.get() == PRELOAD)
     {
         _j = 0;
     }
@@ -587,12 +714,12 @@ void LightRedmule::process_iter_instruction(){
     uint32_t z_height_cutoff = z_height_leftover_byte < buffer_h_byte ? z_height_leftover_byte : buffer_h_byte;
 
     uint32_t buffer_yz_byte = this->ce_height * this->ce_width * (this->ce_pipe + 1) * this->elem_size;
-    switch(this->iter_instruction) {
+    switch(instr) {
         case INSTR_LOAD_Y:
             if (this->iter_y_row_ptr == 0) {
                 std::memset(this->y_buffer_preload, 0, this->LOCAL_BUFFER_H * this->LOCAL_BUFFER_W * this->elem_size);
             }
-            std::memcpy(&(this->y_buffer_preload[this->iter_y_row_ptr]), this->access_buffer, y_cutoff);
+            std::memcpy(&(this->y_buffer_preload[this->iter_y_row_ptr]), buf, y_cutoff);
             if (this->y_acc_block == 0)
             {
                 this->iter_y_row_ptr = 0;
@@ -604,14 +731,14 @@ void LightRedmule::process_iter_instruction(){
             if (this->iter_w_row_ptr == 0) {
                 std::memset(this->w_buffer, 0, this->LOCAL_BUFFER_N * this->LOCAL_BUFFER_W * this->elem_size);
             }
-            std::memcpy(&(this->w_buffer[this->iter_w_row_ptr]), this->access_buffer, w_cutoff);
+            std::memcpy(&(this->w_buffer[this->iter_w_row_ptr]), buf, w_cutoff);
             this->iter_w_row_ptr += buffer_w_byte;
             break;
         case INSTR_LOAD_W_COMPUTE:
             if (this->iter_w_row_ptr == 0) {
                 std::memset(this->w_buffer, 0, this->LOCAL_BUFFER_N * this->LOCAL_BUFFER_W * this->elem_size);
             }
-            std::memcpy(&(this->w_buffer[this->iter_w_row_ptr]), this->access_buffer, w_cutoff);
+            std::memcpy(&(this->w_buffer[this->iter_w_row_ptr]), buf, w_cutoff);
             this->process_compute();
             this->iter_w_row_ptr = 0;
             //Clear X and W buffer
@@ -622,7 +749,7 @@ void LightRedmule::process_iter_instruction(){
             if (this->iter_x_row_ptr == 0) {
                 std::memset(this->x_buffer, 0, ce_height * this->bandwidth);
             }
-            std::memcpy(&(this->x_buffer[this->iter_x_row_ptr]), this->access_buffer, x_cutoff);
+            std::memcpy(&(this->x_buffer[this->iter_x_row_ptr]), buf, x_cutoff);
             if (this->x_acc_block == 0)
             {
                 this->iter_x_row_ptr = 0;
@@ -631,7 +758,7 @@ void LightRedmule::process_iter_instruction(){
             }
             break;
         case INSTR_STOR_Z:
-            std::memcpy(this->access_buffer, &(this->z_buffer_previos[this->iter_z_row_ptr]), buffer_w_byte);
+            std::memcpy(buf, &(this->z_buffer_previos[this->iter_z_row_ptr]), buffer_w_byte);
             if (this->z_acc_block == 0)
             {
                 this->iter_z_row_ptr = 0;
@@ -828,7 +955,7 @@ void LightRedmule::offload_sync(vp::Block *__this, IssOffloadInsn<uint32_t> *ins
     {
         case 0b0001011:
         {
-            if (_this->state.get() == IDLE) {
+            if (_this->reg_fsm_state.get() == IDLE) {
                 insn->granted = true; //here we always grant the core as it is just a configuration
                 _this->m_size = insn->arg_a & 0xFFFF;
                 _this->n_size = insn->arg_b;
@@ -839,7 +966,7 @@ void LightRedmule::offload_sync(vp::Block *__this, IssOffloadInsn<uint32_t> *ins
         }
         case 0b0101011:
         {
-            if (_this->state.get() == IDLE)
+            if (_this->reg_fsm_state.get() == IDLE)
             {
                 insn->granted = true; //as soon as the operations is triggered we deassert the core
                 _this->x_addr = insn->arg_a;
@@ -864,7 +991,8 @@ void LightRedmule::offload_sync(vp::Block *__this, IssOffloadInsn<uint32_t> *ins
                 _this->init_redmule_meta_data();
 
                 //Trigger FSM
-                _this->state.set(PRELOAD);
+                _this->reg_fsm_state.set(PRELOAD);
+                _this->reg_busy.set(1);
                 _this->tcdm_block_total = _this->get_preload_access_block_number();
                 _this->fsm_counter      = 0;
                 _this->fsm_timestamp    = 0;
@@ -877,8 +1005,129 @@ void LightRedmule::offload_sync(vp::Block *__this, IssOffloadInsn<uint32_t> *ins
     }
 }
 
-//This is a very basic reg-if tested and suited to work with MAGIA workloads.
-//Job queueing and full register mapping will be added in the future. 
+/************************************************************
+*  HWPE control-register protocol (ACQUIRE / COMMIT_TRIGGER  *
+*  / STATUS / RUNNING_JOB / SOFT_CLEAR), depth-2 job queue    *
+************************************************************/
+
+//ACQUIRE (0x04, read): assign a new job id and lock the controller
+int32_t LightRedmule::acquire()
+{
+    if (this->job_state != 0) {
+        //Already acquired, not yet committed: re-return the pending id
+        //(checked first to match hwpe_ctrl_target.sv ACQUIRE-state priority over queue-full)
+        return this->job_state;
+    } else if (this->job_pending == 2) {
+        //Queue full
+        return -1;
+    } else {
+        //Free to acquire and room in the queue: hand out a new id
+        int32_t id = (int32_t) this->job_id_counter++;
+        this->cxt_job_id[this->cxt_cfg_ptr] = id;
+        this->job_state = -2;
+        return id;
+    }
+}
+
+//COMMIT_TRIGGER write (ct == 0 commit+start, ct == 1 commit-only)
+void LightRedmule::commit(bool start)
+{
+    if (this->job_state == 0) {
+        //For callers that (improerly) write TRIGGER directly without ever
+        //reading ACQUIRE, the real HW behavior is to not advance the job
+        //id counter, but only the running job counter (which counts retired
+        //jobs). We mirror that here.
+        if (this->job_pending < 2) {
+            this->cxt_job_id[this->cxt_cfg_ptr] = (int32_t) this->job_id_counter;
+            this->job_state = -2;
+        }
+    }
+    if (this->job_state != -2) {
+        //Queue full: drop
+        this->trace.msg(vp::Trace::LEVEL_WARNING,"[LightRedmule] COMMIT_TRIGGER dropped: job queue full (job_pending=%d)\n", this->job_pending);
+        return;
+    }
+
+    //Commit: unlock, queue the job, flip the config pointer
+    this->job_pending++;
+    this->job_state = 0;
+    this->cxt_cfg_ptr = 1 - this->cxt_cfg_ptr;
+
+    if (start && (this->reg_fsm_state.get() == IDLE)) {
+        this->start_next_job();
+    }
+}
+
+//Load the queued job in cxt_use_ptr and kick off the FSM (IDLE -> PRELOAD)
+void LightRedmule::start_next_job()
+{
+    //Load context
+    this->m_size         = this->cxt_m_size[this->cxt_use_ptr];
+    this->n_size         = this->cxt_n_size[this->cxt_use_ptr];
+    this->k_size         = this->cxt_k_size[this->cxt_use_ptr];
+    this->x_addr         = this->cxt_x_addr[this->cxt_use_ptr];
+    this->w_addr         = this->cxt_w_addr[this->cxt_use_ptr];
+    this->y_addr         = this->cxt_y_addr[this->cxt_use_ptr];
+    this->z_addr         = this->y_addr;
+    this->compute_able   = this->cxt_compute_able[this->cxt_use_ptr];
+    this->elem_size      = (this->compute_able < 4) ? 2 : 1;
+    this->running_job_id = this->cxt_job_id[this->cxt_use_ptr];
+
+    //Sanity Check
+    this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] redmule configuration (M-N-K): %d, %d, %d. Compute able is %d\n", this->m_size, this->n_size, this->k_size, this->compute_able);
+    if ((this->m_size == 0)||(this->n_size == 0)||(this->k_size == 0))
+    {
+        this->trace.fatal("[LightRedmule] INVALID redmule configuration (M-N-K): %d, %d, %d\n", this->m_size, this->n_size, this->k_size);
+        return;
+    }
+
+    //Initilaize redmule meta data
+    this->init_redmule_meta_data();
+
+    //Trigger FSM
+    this->reg_fsm_state.set(PRELOAD);
+    this->reg_busy.set(1);
+    this->tcdm_block_total = this->get_preload_access_block_number();
+    this->fsm_counter      = 0;
+    this->fsm_timestamp    = 0;
+    this->timer_start      = this->time.get_time();
+    this->cycle_start      = this->clock.get_cycles();
+    this->event_enqueue(this->fsm_event, 1);
+}
+
+//SOFT_CLEAR write: 0 full clear, 1 clear engine state only, 2 clear regfile+queue only
+void LightRedmule::soft_clear(uint32_t value)
+{
+    if ((value == 0) || (value == 2)) {
+        //Clear job-offload state machine, job queue, ID counters, and buffered
+        //job-dependent config (regfile)
+        this->job_state      = 0;
+        this->job_pending     = 0;
+        this->cxt_job_id[0]   = -1;
+        this->cxt_job_id[1]   = -1;
+        this->running_job_id  = -1;
+        this->cxt_cfg_ptr     = 0;
+        this->cxt_use_ptr     = 0;
+        this->job_id_counter  = 0;
+        for (int i = 0; i < 2; i++) {
+            this->cxt_m_size[i]       = 0;
+            this->cxt_n_size[i]       = 0;
+            this->cxt_k_size[i]       = 0;
+            this->cxt_x_addr[i]       = 0;
+            this->cxt_w_addr[i]       = 0;
+            this->cxt_y_addr[i]       = 0;
+            this->cxt_compute_able[i] = 0;
+        }
+    }
+    if ((value == 0) || (value == 1)) {
+        //Clear engine state (compute FSM)
+        this->reg_fsm_state.set(IDLE);
+        this->reg_busy.set(0);
+        this->done.sync(false);
+    }
+}
+
+//LightRedmule register interface
 vp::IoReqStatus LightRedmule::req(vp::Block *__this, vp::IoReq *req)
 {
     LightRedmule *_this = (LightRedmule *)__this;
@@ -894,7 +1143,7 @@ vp::IoReqStatus LightRedmule::req(vp::Block *__this, vp::IoReq *req)
         uint32_t value = *(uint32_t *)data;
         switch (offset) {
             case 0x00: {
-                if ((_this->redmule_query == NULL) && (_this->state.get() == IDLE)) {
+                if ((_this->redmule_query == NULL) && (_this->reg_fsm_state.get() == IDLE)) {
                     /************************
                     *  Synchronize Trigger  *
                     ************************/
@@ -906,13 +1155,14 @@ vp::IoReqStatus LightRedmule::req(vp::Block *__this, vp::IoReq *req)
                         return vp::IO_REQ_OK;
                     }
 
-                    //Initilaize redmule meta data
+                    //Initialize redmule meta data
                     _this->init_redmule_meta_data();
 
                     
 
                     //Trigger FSM
-                    _this->state.set(PRELOAD);
+                    _this->reg_fsm_state.set(PRELOAD);
+                    _this->reg_busy.set(1);
                     _this->tcdm_block_total = _this->get_preload_access_block_number();
                     _this->fsm_counter      = 0;
                     _this->fsm_timestamp    = 0;
@@ -969,7 +1219,7 @@ vp::IoReqStatus LightRedmule::req(vp::Block *__this, vp::IoReq *req)
                 break;
             case 0x0C: {
                 int32_t done_id_r;
-                if ((_this->redmule_query == NULL) && (_this->state.get() == IDLE)) {
+                if ((_this->redmule_query == NULL) && (_this->reg_fsm_state.get() == IDLE)) {
                     done_id_r =  0x00;
                     memcpy((void *)data, (void *)&done_id_r, size);
                 }
@@ -996,52 +1246,33 @@ vp::IoReqStatus LightRedmule::req_v2(vp::Block *__this, vp::IoReq *req)
     uint64_t size = req->get_size();
     bool is_write = req->get_is_write();
 
-    //_this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] access (offset: 0x%x, size: 0x%x, is_write: %d, data:%x)\n", offset, size, is_write, *(uint32_t *)data);
-
     if (is_write == 1) {
         uint32_t value = *(uint32_t *)data;
         switch (offset) {
-            case 0x00: {
-                if ((_this->redmule_query == NULL) && (_this->state.get() == IDLE)) {
-                    /************************
-                    *  Synchronize Trigger  *
-                    ************************/
-                    //Sanity Check
-                    _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] redmule configuration (M-N-K): %d, %d, %d. Compute able is %d\n", _this->m_size, _this->n_size, _this->k_size,_this->compute_able);
-                    if ((_this->m_size == 0)||(_this->n_size == 0)||(_this->k_size == 0))
-                    {
-                        _this->trace.fatal("[LightRedmule] INVALID redmule configuration (M-N-K): %d, %d, %d\n", _this->m_size, _this->n_size, _this->k_size);
-                        return vp::IO_REQ_OK;
+            case 0x00: { //REDMULE_TRIGGER / hwpe_commit_trigger
+                uint32_t ct = value & 0x3;
+                if (ct == 2) {
+                    //Trigger-only: start whatever is already queued, no new commit
+                    if ((_this->job_pending > 0) && (_this->reg_fsm_state.get() == IDLE)) {
+                        _this->start_next_job();
                     }
-
-                    //Initilaize redmule meta data
-                    _this->init_redmule_meta_data();
-
-                    
-
-                    //Trigger FSM
-                    _this->state.set(PRELOAD);
-                    _this->tcdm_block_total = _this->get_preload_access_block_number();
-                    _this->fsm_counter      = 0;
-                    _this->fsm_timestamp    = 0;
-                    _this->timer_start      = _this->time.get_time();
-                    _this->cycle_start      = _this->clock.get_cycles();
-                    _this->event_enqueue(_this->fsm_event, 1);
-
-                    //Save Query
-                    //_this->redmule_query = req;
+                } else if (ct == 3) {
+                    //Neither bit is 0: no-op
+                } else {
+                    //ct == 0: commit + start; ct == 1: commit only (deferred start)
+                    _this->commit(ct == 0);
                 }
                 break;
             }
             case 0x20: { //REDMULE_MCFG0_PTR
-                _this->m_size=value & 0xFFFF;
-                _this->k_size=value >> 16;
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] Set mcfg_reg0 -- M size %d, Set K size %d)\n", _this->m_size,_this->k_size);
+                _this->cxt_m_size[_this->cxt_cfg_ptr] = value & 0xFFFF;
+                _this->cxt_k_size[_this->cxt_cfg_ptr] = value >> 16;
+                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] Set mcfg_reg0 -- M size %d, Set K size %d)\n", _this->cxt_m_size[_this->cxt_cfg_ptr],_this->cxt_k_size[_this->cxt_cfg_ptr]);
                 break;
             }
             case 0x24: { //REDMULE_MCFG1_PTR
-                _this->n_size=value & 0xFFFF;
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] Set mcfg_reg1 -- N size %d)\n", _this->n_size);
+                _this->cxt_n_size[_this->cxt_cfg_ptr] = value & 0xFFFF;
+                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] Set mcfg_reg1 -- N size %d)\n", _this->cxt_n_size[_this->cxt_cfg_ptr]);
                 break;
             }
             case 0x28: { //REDMULE_MCFG2_PTR
@@ -1049,25 +1280,28 @@ vp::IoReqStatus LightRedmule::req_v2(vp::Block *__this, vp::IoReq *req)
                 break;
             }
             case 0x2C: {
-                _this->x_addr = value;
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] Set X addr 0x%x)\n", _this->x_addr);
+                _this->cxt_x_addr[_this->cxt_cfg_ptr] = value;
+                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] Set X addr 0x%x)\n", _this->cxt_x_addr[_this->cxt_cfg_ptr]);
                 break;
             }
             case 0x30: {
-                _this->w_addr = value;
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] Set W addr 0x%x)\n", _this->w_addr);
+                _this->cxt_w_addr[_this->cxt_cfg_ptr] = value;
+                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] Set W addr 0x%x)\n", _this->cxt_w_addr[_this->cxt_cfg_ptr]);
                 break;
             }
             case 0x34: {
-                _this->y_addr = value;
-                _this->z_addr = _this->y_addr;
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] Set Y addr 0x%x, Set Z addr 0x%x)\n", _this->y_addr,_this->z_addr);
+                _this->cxt_y_addr[_this->cxt_cfg_ptr] = value;
+                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] Set Y addr 0x%x)\n", _this->cxt_y_addr[_this->cxt_cfg_ptr]);
+                break;
+            }
+            case 0x14: { //REDMULE_SOFT_CLEAR
+                _this->soft_clear(value);
+                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] SOFT_CLEAR 0x%x\n", value);
                 break;
             }
             case 0x54: {
-                _this->compute_able = _this->op_foramt_parser((value == 0x480)? 9:0); //the marith mapping between reg-if and offload-if is different... WHY?
-                _this->elem_size = (_this->compute_able < 4)? 2:1;
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] marith 0x%x, compute_able 0x%x, elem_size %d)\n", value,_this->compute_able,_this->elem_size);
+                _this->cxt_compute_able[_this->cxt_cfg_ptr] = _this->op_foramt_parser((value == 0x480)? 9:0); //the marith mapping between reg-if and offload-if is different... WHY?
+                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] marith 0x%x, compute_able 0x%x)\n", value,_this->cxt_compute_able[_this->cxt_cfg_ptr]);
                 break;
             }
             default:
@@ -1076,20 +1310,22 @@ vp::IoReqStatus LightRedmule::req_v2(vp::Block *__this, vp::IoReq *req)
     }
     else {
         switch (offset) {
-            case 0x00:
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] read to INVALID address\n");
+            case 0x04: { //REDMULE_ACQUIRE
+                int32_t id = _this->acquire();
+                memcpy((void *)data, (void *)&id, size);
+                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] ACQUIRE -> job id %d\n", id);
                 break;
-            case 0x0C: {
-                int32_t done_id_r;
-                if ((_this->redmule_query == NULL) && (_this->state.get() == IDLE)) {
-                    done_id_r =  0x00;
-                    memcpy((void *)data, (void *)&done_id_r, size);
-                }
-                else {
-                    done_id_r =  0x01;
-                    memcpy((void *)data, (void *)&done_id_r, size);
-                }
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] read status reg 0x%x\n",done_id_r);
+            }
+            case 0x0C: { //REDMULE_STATUS - per-slot busy bitfield (bit0 slot0, bit8 slot1)
+                uint32_t status = (_this->cxt_job_id[0] >= 0 ? 0x1 : 0) | (_this->cxt_job_id[1] >= 0 ? 0x100 : 0);
+                memcpy((void *)data, (void *)&status, size);
+                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] read status reg 0x%x\n",status);
+                break;
+            }
+            case 0x10: { //REDMULE_RUNNING_JOB
+                uint32_t running_job = (uint32_t) _this->running_job_id;
+                memcpy((void *)data, (void *)&running_job, size);
+                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] RUNNING_JOB -> %d\n", _this->running_job_id);
                 break;
             }
             default:
@@ -1099,71 +1335,262 @@ vp::IoReqStatus LightRedmule::req_v2(vp::Block *__this, vp::IoReq *req)
     return vp::IO_REQ_OK;
 }
 
-    // if ((is_write == 0) && (offset == 32) && (_this->redmule_query == NULL) && (_this->state.get() == IDLE))
-    // {
-    //     /************************
-    //     *  Synchronize Trigger  *
-    //     ************************/
-    //     //Sanity Check
-    //     _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] redmule configuration (M-N-K): %d, %d, %d\n", _this->m_size, _this->n_size, _this->k_size);
-    //     if ((_this->m_size == 0)||(_this->n_size == 0)||(_this->k_size == 0))
-    //     {
-    //         _this->trace.fatal("[LightRedmule] INVALID redmule configuration (M-N-K): %d, %d, %d\n", _this->m_size, _this->n_size, _this->k_size);
-    //         return vp::IO_REQ_OK;
-    //     }
-
-    //     //Initilaize redmule meta data
-    //     _this->init_redmule_meta_data();
-
-    //     //Trigger FSM
-    //     _this->state.set(PRELOAD);
-    //     _this->tcdm_block_total = _this->get_preload_access_block_number();
-    //     _this->fsm_counter      = 0;
-    //     _this->fsm_timestamp    = 0;
-    //     _this->timer_start      = _this->time.get_time();
-    //     _this->cycle_start      = _this->clock.get_cycles();
-    //     _this->compute_able     = 0;
-    //     _this->event_enqueue(_this->fsm_event, 1);
-
-    //     //Save Query
-    //     _this->redmule_query = req;
-    //     return vp::IO_REQ_PENDING;
-
-    // } else if ((is_write == 0) && (offset == 36) && (_this->state.get() == IDLE)){
-    //     /*************************
-    //     *  Asynchronize Trigger  *
-    //     *************************/
-    //     //Sanity Check
-    //     _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] redmule configuration (M-N-K): %d, %d, %d\n", _this->m_size, _this->n_size, _this->k_size);
-    //     if ((_this->m_size == 0)||(_this->n_size == 0)||(_this->k_size == 0))
-    //     {
-    //         _this->trace.fatal("[LightRedmule] INVALID redmule configuration (M-N-K): %d, %d, %d\n", _this->m_size, _this->n_size, _this->k_size);
-    //         return vp::IO_REQ_OK;
-    //     }
-
-    //     //Initilaize redmule meta data
-    //     _this->init_redmule_meta_data();
-
-    //     //Trigger FSM
-    //     _this->state.set(PRELOAD);
-    //     _this->tcdm_block_total = _this->get_preload_access_block_number();
-    //     _this->fsm_counter      = 0;
-    //     _this->fsm_timestamp    = 0;
-    //     _this->timer_start      = _this->time.get_time();
-    //     _this->cycle_start      = _this->clock.get_cycles();
-    //     _this->compute_able     = 0;
-    //     _this->event_enqueue(_this->fsm_event, 1);
-
-    // } else if ((is_write == 0) && (offset == 40) && (_this->redmule_query == NULL) && (_this->state.get() != IDLE)){
-    //     /*************************
-    //     *  Asynchronize Waiting  *
-    //     *************************/
-    //     _this->redmule_query = req;
-    //     return vp::IO_REQ_PENDING;
-
-vp::IoReqStatus LightRedmule::send_tcdm_req()
+// LSU-style slot allocation. A slot is considered free when its available_at
+// timestamp has elapsed; scan the pool and grab the first such slot, marking
+// it as in-flight (available_at = INT64_MAX) so it can't be reallocated until
+// either the sync OK path or the async response callback installs a real
+// completion timestamp.
+int LightRedmule::alloc_req_slot()
 {
-    return this->tcdm_itf.req(this->tcdm_req);
+    int64_t now = this->clock.get_cycles();
+    int     best_id = -1;
+    int64_t best_cycle = INT64_MAX;
+    for (size_t i = 0; i < this->req_slots.size(); i++)
+    {
+        int64_t at = this->req_slots[i].available_at;
+        if (at <= now && at < best_cycle)
+        {
+            best_id    = (int)i;
+            best_cycle = at;
+        }
+    }
+    if (best_id >= 0)
+    {
+        // Reserve until free_req_slot() installs the real completion cycle.
+        this->req_slots[best_id].available_at = INT64_MAX;
+    }
+    return best_id;
+}
+
+void LightRedmule::free_req_slot(int id, int64_t available_at)
+{
+    this->req_slots[id].available_at = available_at;
+}
+
+bool LightRedmule::all_slots_free()
+{
+    int64_t now = this->clock.get_cycles();
+    for (auto &slot : this->req_slots)
+    {
+        if (slot.available_at > now) return false;
+    }
+    return true;
+}
+
+// Mirror the old `pending_req_queue.size() <= queue_depth` issue gate: a slot
+// maturing at `now` still counts as busy here (`>= now`) vs the `<= now` reuse
+// test in alloc_req_slot()/all_slots_free(), so the next alloc cannot fail.
+bool LightRedmule::issue_slot_gate_ok()
+{
+    int64_t now = this->clock.get_cycles();
+    uint32_t outstanding = 0;
+    for (auto &slot : this->req_slots)
+    {
+        if (slot.available_at >= now) outstanding++;
+    }
+    return outstanding <= this->queue_depth;
+}
+
+// Memcpy using the captured (dst_offset, cutoff). OOO-safe because no FSM
+// state is touched.
+void LightRedmule::apply_response_data(uint8_t *buf, uint32_t instr, uint32_t dst_offset, uint32_t cutoff)
+{
+    switch (instr)
+    {
+        case INSTR_LOAD_Y:
+            std::memcpy(&(this->y_buffer_preload[dst_offset]), buf, cutoff);
+            break;
+        case INSTR_LOAD_W:
+        case INSTR_LOAD_W_COMPUTE:
+            std::memcpy(&(this->w_buffer[dst_offset]), buf, cutoff);
+            break;
+        case INSTR_LOAD_X:
+            // Double-buffer: write to x_buffer_next (compute reads x_buffer).
+            std::memcpy(&(this->x_buffer_next[dst_offset]), buf, cutoff);
+            break;
+        case INSTR_STOR_Z:
+            // Data was serialized into slot.buf at issue time.
+            break;
+        default:
+            break;
+    }
+}
+
+void LightRedmule::run_compute_and_drain()
+{
+    this->process_compute();
+    std::memset(this->w_buffer, 0, this->ce_width * (this->ce_pipe + 1) * this->bandwidth);
+    this->compute_pending = false;
+}
+
+void LightRedmule::handle_response(int slot_id, int64_t free_cycle)
+{
+    ReqSlot &slot = this->req_slots[slot_id];
+
+    if (this->compute_able != 0)
+    {
+        this->apply_response_data(slot.buf, slot.instr, slot.dst_offset, slot.cutoff);
+    }
+
+    if (slot.instr == INSTR_LOAD_W || slot.instr == INSTR_LOAD_W_COMPUTE)
+    {
+        if (this->w_outstanding_count > 0) this->w_outstanding_count -= 1;
+        if (this->compute_pending && this->w_outstanding_count == 0)
+        {
+            this->run_compute_and_drain();
+        }
+    }
+
+    this->free_req_slot(slot_id, free_cycle);
+}
+
+void LightRedmule::tcdm_response(vp::Block *__this, vp::IoReq *req)
+{
+    LightRedmule *_this = (LightRedmule *)__this;
+    int slot_id = *((int *)req->arg_get(0));
+    uint32_t instr = _this->req_slots[slot_id].instr;
+
+    _this->handle_response(slot_id, _this->clock.get_cycles());
+
+    _this->trace.msg(vp::Trace::LEVEL_TRACE, "[LightRedmule][Resp] slot=%d instr=%d (w_out=%d, compute_pending=%d)\n",
+        slot_id, instr, _this->w_outstanding_count, (int)_this->compute_pending);
+}
+
+// DENIED → granted: clear the denied flag; response will still arrive via
+// tcdm_response.
+void LightRedmule::tcdm_grant(vp::Block *__this, vp::IoReq *req)
+{
+    LightRedmule *_this = (LightRedmule *)__this;
+    _this->request_denied = false;
+    _this->trace.msg(vp::Trace::LEVEL_TRACE, "[LightRedmule][Grant] received, resuming issue\n");
+}
+
+// Issue one request. Captures iter-dependent state (dst_offset, cutoff) at
+// issue time so OOO responses don't race against an advancing FSM. Returns
+// false only if the slot pool is exhausted.
+bool LightRedmule::issue_request(uint32_t addr, uint32_t instr, bool is_write, uint32_t size)
+{
+    int slot_id = this->alloc_req_slot();
+    if (slot_id < 0)
+    {
+        return false;
+    }
+
+    ReqSlot &slot = this->req_slots[slot_id];
+    slot.instr = instr;
+
+    uint32_t buffer_n_byte = this->bandwidth;
+    uint32_t buffer_w_byte = this->ce_width * (this->ce_pipe + 1) * this->elem_size;
+
+    // Cutoff (valid bytes); mirrors process_iter_instruction.
+    uint32_t cutoff = 0;
+    if (instr == INSTR_LOAD_X)
+    {
+        uint32_t _k = this->iter_k + 1;
+        if ((_k == this->x_row_tiles) || this->reg_fsm_state.get() == PRELOAD) _k = 0;
+        uint32_t x_leftover_byte = this->n_size * this->elem_size - _k * buffer_n_byte;
+        cutoff = (x_leftover_byte < buffer_n_byte) ? x_leftover_byte : buffer_n_byte;
+    }
+    else if (instr == INSTR_LOAD_W || instr == INSTR_LOAD_W_COMPUTE)
+    {
+        uint32_t w_leftover_byte = this->k_size * this->elem_size - this->iter_j * buffer_w_byte;
+        cutoff = (w_leftover_byte < buffer_w_byte) ? w_leftover_byte : buffer_w_byte;
+    }
+    else if (instr == INSTR_LOAD_Y)
+    {
+        uint32_t _j = this->iter_j + 1;
+        if ((_j == this->z_row_tiles) || this->reg_fsm_state.get() == PRELOAD) _j = 0;
+        uint32_t y_leftover_byte = this->k_size * this->elem_size - _j * buffer_w_byte;
+        cutoff = (y_leftover_byte < buffer_w_byte) ? y_leftover_byte : buffer_w_byte;
+    }
+    else if (instr == INSTR_STOR_Z)
+    {
+        cutoff = buffer_w_byte;
+    }
+    slot.cutoff = cutoff;
+
+    // Capture row offset, advance iter_*_row_ptr at issue (mirrors the sync
+    // handler's pointer arithmetic).
+    if (instr == INSTR_LOAD_Y)
+    {
+        slot.dst_offset = this->iter_y_row_ptr;
+        if (slot.dst_offset == 0)
+        {
+            // FORWARD_YZ consumes y_buffer_preload only after all_slots_free.
+            std::memset(this->y_buffer_preload, 0,
+                this->LOCAL_BUFFER_H * this->LOCAL_BUFFER_W * this->elem_size);
+        }
+        if (this->y_acc_block == 0) this->iter_y_row_ptr = 0;
+        else                        this->iter_y_row_ptr += buffer_w_byte;
+    }
+    else if (instr == INSTR_LOAD_W || instr == INSTR_LOAD_W_COMPUTE)
+    {
+        slot.dst_offset = this->iter_w_row_ptr;
+        if (slot.dst_offset == 0)
+        {
+            // Compute fires only after all W responses are in.
+            std::memset(this->w_buffer, 0,
+                this->LOCAL_BUFFER_N * this->LOCAL_BUFFER_W * this->elem_size);
+        }
+        this->iter_w_row_ptr += buffer_w_byte;
+        this->w_outstanding_count += 1;
+        if (instr == INSTR_LOAD_W_COMPUTE)
+        {
+            this->compute_pending  = true;
+            this->iter_w_row_ptr   = 0;
+        }
+    }
+    else if (instr == INSTR_LOAD_X)
+    {
+        // LOAD_X writes to x_buffer_next; iter_done's swap+memset keeps it clean.
+        slot.dst_offset = this->iter_x_row_ptr;
+        if (this->x_acc_block == 0) this->iter_x_row_ptr = 0;
+        else                        this->iter_x_row_ptr += buffer_n_byte;
+    }
+    else if (instr == INSTR_STOR_Z)
+    {
+        // Snapshot Z row into slot.buf now — z_buffer_previos may be
+        // overwritten by FORWARD_YZ before this write finishes.
+        slot.dst_offset = this->iter_z_row_ptr; // src_offset for stores
+        if (this->compute_able != 0)
+        {
+            std::memcpy(slot.buf, &(this->z_buffer_previos[slot.dst_offset]), buffer_w_byte);
+        }
+        if (this->z_acc_block == 0) this->iter_z_row_ptr = 0;
+        else                        this->iter_z_row_ptr += buffer_w_byte;
+    }
+
+    // prepare() preserves args; init() would not.
+    slot.req->prepare();
+    slot.req->set_addr(addr);
+    slot.req->set_size(size);
+    slot.req->set_is_write(is_write);
+    slot.req->set_data(slot.buf);
+
+    vp::IoReqStatus err = this->tcdm_itf.req(slot.req);
+
+    if (err == vp::IO_REQ_OK)
+    {
+        // Sync OK: data is back, but the port was busy for `latency` cycles.
+        int64_t free_cycle = this->clock.get_cycles() + (int64_t)slot.req->get_latency();
+        this->handle_response(slot_id, free_cycle);
+    }
+    else if (err == vp::IO_REQ_PENDING)
+    {
+        // Slot stays reserved (INT64_MAX); tcdm_response will free it.
+    }
+    else if (err == vp::IO_REQ_DENIED)
+    {
+        // Block further issues until tcdm_grant clears the flag.
+        this->request_denied = true;
+    }
+    else
+    {
+        this->trace.fatal("[LightRedmule] Unexpected IoReq status %d\n", (int)err);
+        return false;
+    }
+
+    return true;
 }
 
 void LightRedmule::fsm_handler(vp::Block *__this, vp::ClockEvent *event)
@@ -1172,138 +1599,83 @@ void LightRedmule::fsm_handler(vp::Block *__this, vp::ClockEvent *event)
 
     _this->fsm_timestamp += 1;
 
-    switch (_this->state.get()) {
+    switch (_this->reg_fsm_state.get()) {
         case IDLE:
             _this->done.sync(false); //clear irq
+            //Auto-continue: start the next queued job, if any (depth-2 pipelining).
+            //Happens after done is deasserted.
+            if (_this->job_pending > 0) {
+                _this->start_next_job();
+            }
             break;
 
         case PRELOAD: {
-            //Send Request Process
-            if ((_this->fsm_counter < _this->tcdm_block_total) && (_this->pending_req_queue.size() <= _this->queue_depth))
+            // Gate issue on slot capacity before next_addr() advances state.
+            bool can_issue = (_this->fsm_counter < _this->tcdm_block_total)
+                && !_this->request_denied
+                && _this->issue_slot_gate_ok();
+
+            if (can_issue)
             {
-                //Form request
-                uint32_t temp_addr=_this->next_addr() - _this->loc_base;
-                _this->tcdm_req->init();
-                _this->tcdm_req->set_addr(temp_addr);
-                _this->tcdm_req->set_data(_this->access_buffer);
-
-                //Send request
-                vp::IoReqStatus err = _this->send_tcdm_req();
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][Preload] --- Send TCDM req #%d [addr=0x%08x]\n",_this->fsm_counter,temp_addr);
-
-                //Check error
-                if (err != vp::IO_REQ_OK) {
-                    _this->trace.fatal("[LightRedmule][Preload] There was an error while reading/writing data\n");
-                    return;
-                }
-
-                //Process Data if Compute Enabled
-                if (_this->compute_able != 0)
+                uint32_t temp_addr = _this->next_addr() - _this->loc_base;
+                bool is_w = _this->tcdm_req->get_is_write();
+                uint32_t sz = (uint32_t)_this->tcdm_req->get_size();
+                if (_this->issue_request(temp_addr, _this->iter_instruction, is_w, sz))
                 {
-                    _this->process_iter_instruction();
+                    _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][Preload] Send TCDM req #%d [addr=0x%08x]\n",
+                        _this->fsm_counter, temp_addr);
+                    _this->fsm_counter += 1;
                 }
-
-                //Counte on receiving cycle
-                uint32_t receive_stamp = _this->tcdm_req->get_latency() + _this->fsm_timestamp;
-
-                //Push pending request queue
-                _this->pending_req_queue.push(receive_stamp);
-
-                //Add counter
-                _this->fsm_counter += 1;
             }
 
-            //Recieve Process
-            while((_this->pending_req_queue.size()!= 0) && (_this->pending_req_queue.front() <= _this->fsm_timestamp)){
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][Preload] ---                           Receive TCDM resp\n");
-                // std::string out;
-                // for (int i = 0; i < _this->tcdm_req->get_size(); i += 2) {
-                //     char tmp[16];
-                //     snprintf(tmp, sizeof(tmp), "0x%02x%02x, ", _this->access_buffer[i + 1], _this->access_buffer[i]);
-                //     out += tmp;
-                // }
-                // _this->trace.msg(vp::Trace::LEVEL_TRACE,"%s\n", out.c_str());
-                _this->pending_req_queue.pop();
-            }
-
-            //Jump
-            if ((_this->fsm_counter >= _this->tcdm_block_total) && (_this->pending_req_queue.size() == 0))
+            bool iter_done = (_this->fsm_counter >= _this->tcdm_block_total)
+                          && _this->all_slots_free();
+            if (iter_done)
             {
                 _this->tcdm_block_total = _this->get_routine_access_block_number();
                 _this->fsm_counter      = 0;
                 _this->fsm_timestamp    = 0;
-                _this->state.set(ROUTINE);
+                _this->reg_fsm_state.set(ROUTINE);
+                _this->reg_busy.set(1);
 
-                //Forward YZ at Preload->Routine if Compute Enabled
+                // Promote PRELOAD's X(k=0) into x_buffer for ROUTINE's compute.
+                std::swap(_this->x_buffer, _this->x_buffer_next);
+                std::memset(_this->x_buffer_next, 0, _this->ce_height * _this->bandwidth);
+
                 if (_this->compute_able != 0)
                 {
                     _this->iter_instruction = INSTR_FORWARD_YZ;
                     _this->process_iter_instruction();
                 }
             } else {
-                _this->state.set(PRELOAD);
+                _this->reg_fsm_state.set(PRELOAD);
+                _this->reg_busy.set(1);
             }
 
             _this->event_enqueue(_this->fsm_event, 1);
             break;
         }
         case ROUTINE: {
-            //Send Request Process
-            if ((_this->fsm_counter < _this->tcdm_block_total) && (_this->pending_req_queue.size() <= _this->queue_depth))
+            bool can_issue = (_this->fsm_counter < _this->tcdm_block_total)
+                && !_this->request_denied
+                && _this->issue_slot_gate_ok();
+
+            if (can_issue)
             {
-                //Form request
-                uint32_t temp_addr=_this->next_addr() - _this->loc_base;
-                _this->tcdm_req->init();
-                _this->tcdm_req->set_addr(temp_addr);
-                _this->tcdm_req->set_data(_this->access_buffer);
-
-                //Process Data if Compute Enabled
-                if (_this->compute_able != 0 && (_this->iter_instruction == INSTR_STOR_Z))
+                uint32_t temp_addr = _this->next_addr() - _this->loc_base;
+                bool is_w = _this->tcdm_req->get_is_write();
+                uint32_t sz = (uint32_t)_this->tcdm_req->get_size();
+                if (_this->issue_request(temp_addr, _this->iter_instruction, is_w, sz))
                 {
-                    _this->process_iter_instruction();
+                    _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][ROUTINE-ijk: %0d-%0d-%0d] Send TCDM req #%d [addr=0x%08x]\n",
+                        _this->iter_i, _this->iter_j, _this->iter_k, _this->fsm_counter, temp_addr);
+                    _this->fsm_counter += 1;
                 }
-
-                //Send request
-                vp::IoReqStatus err = _this->send_tcdm_req();
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][ROUTINE-ijk: %0d-%0d-%0d] --- Send TCDM req #%d [addr=0x%08x]\n", _this->iter_i, _this->iter_j, _this->iter_k, _this->fsm_counter,temp_addr);
-
-                //Check error
-                if (err != vp::IO_REQ_OK) {
-                    _this->trace.fatal("[LightRedmule][ROUTINE-ijk: %0d-%0d-%0d] There was an error while reading/writing data\n", _this->iter_i, _this->iter_j, _this->iter_k);
-                    return;
-                }
-
-                //Process Data if Compute Enabled
-                if (_this->compute_able != 0 && _this->iter_instruction != INSTR_STOR_Z)
-                {
-                    _this->process_iter_instruction();
-                }
-
-                //Counte on receiving cycle
-                uint32_t receive_stamp = _this->tcdm_req->get_latency() + _this->fsm_timestamp;
-
-                //Push pending request queue
-                _this->pending_req_queue.push(receive_stamp);
-
-                //Add counter
-                _this->fsm_counter += 1;
             }
 
-            //Recieve Process
-            while((_this->pending_req_queue.size()!= 0) && (_this->pending_req_queue.front() <= _this->fsm_timestamp) ){
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][ROUTINE-ijk: %0d-%0d-%0d] ---                           Receive TCDM resp\n", _this->iter_i, _this->iter_j, _this->iter_k);
-                // std::string out;
-                // for (int i = 0; i < _this->tcdm_req->get_size(); i += 2) {
-                //     char tmp[16];
-                //     snprintf(tmp, sizeof(tmp), "0x%02x%02x, ", _this->access_buffer[i + 1], _this->access_buffer[i]);
-                //     out += tmp;
-                // }
-                // _this->trace.msg(vp::Trace::LEVEL_TRACE,"%s\n", out.c_str());
-                _this->pending_req_queue.pop();
-            }
-
-            //Jump
-            if ((_this->fsm_counter >= _this->tcdm_block_total) && (_this->pending_req_queue.size() == 0))
+            bool iter_done = (_this->fsm_counter >= _this->tcdm_block_total)
+                          && _this->all_slots_free();
+            if (iter_done)
             {
                 int modeled_runtime = _this->get_redmule_array_runtime();
                 int64_t latency = 1;
@@ -1322,6 +1694,11 @@ void LightRedmule::fsm_handler(vp::Block *__this, vp::ClockEvent *event)
                 _this->fsm_counter      = 0;
                 _this->fsm_timestamp    = 0;
 
+                // Promote next-iter's X into x_buffer (race-free because
+                // all_slots_free guarantees every X response has landed).
+                std::swap(_this->x_buffer, _this->x_buffer_next);
+                std::memset(_this->x_buffer_next, 0, _this->ce_height * _this->bandwidth);
+
                 // Need Forward YZ
                 if ((_this->compute_able != 0) && (_this->iter_k + 1 == _this->x_row_tiles))
                 {
@@ -1332,77 +1709,51 @@ void LightRedmule::fsm_handler(vp::Block *__this, vp::ClockEvent *event)
                 if (_this->next_iteration() == 0)
                 {
                     _this->tcdm_block_total = _this->get_routine_access_block_number();
-                    _this->state.set(ROUTINE);
+                    _this->reg_fsm_state.set(ROUTINE);
+                    _this->reg_busy.set(1);
                 } else {
                     _this->tcdm_block_total = _this->get_storing_access_block_number();
-                    _this->state.set(STORING);
+                    _this->reg_fsm_state.set(STORING);
+                    _this->reg_busy.set(1);
                     latency += _this->get_routine_to_storing_latency();
                 }
 
                 _this->event_enqueue(_this->fsm_event, latency);
             } else {
-                _this->state.set(ROUTINE);
+                _this->reg_fsm_state.set(ROUTINE);
+                _this->reg_busy.set(1);
                 _this->event_enqueue(_this->fsm_event, 1);
             }
 
             break;
         }
         case STORING: {
-            //Send Request Process
-            if ((_this->fsm_counter < _this->tcdm_block_total) && (_this->pending_req_queue.size() <= _this->queue_depth))
+            bool can_issue = (_this->fsm_counter < _this->tcdm_block_total)
+                && !_this->request_denied
+                && _this->issue_slot_gate_ok();
+
+            if (can_issue)
             {
-                //Form request
-                uint32_t temp_addr=_this->next_addr() - _this->loc_base;
-                _this->tcdm_req->init();
-                _this->tcdm_req->set_addr(temp_addr);
-                _this->tcdm_req->set_data(_this->access_buffer);
-
-                //Process Data if Compute Enabled
-                if (_this->compute_able != 0 && (_this->iter_instruction == INSTR_STOR_Z))
+                uint32_t temp_addr = _this->next_addr() - _this->loc_base;
+                bool is_w = _this->tcdm_req->get_is_write();
+                uint32_t sz = (uint32_t)_this->tcdm_req->get_size();
+                if (_this->issue_request(temp_addr, _this->iter_instruction, is_w, sz))
                 {
-                    _this->process_iter_instruction();
+                    _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][Storing] Send TCDM req #%d [addr=0x%08x]\n",
+                        _this->fsm_counter, temp_addr);
+                    _this->fsm_counter += 1;
                 }
-
-                //Send request
-                vp::IoReqStatus err = _this->send_tcdm_req();
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][Storing] --- Send TCDM req #%d [addr=0x%08x]\n",_this->fsm_counter,temp_addr);
-
-                //Check error
-                if (err != vp::IO_REQ_OK) {
-                    _this->trace.fatal("[LightRedmule][Storing] There was an error while reading/writing data\n");
-                    return;
-                }
-
-                //Counte on receiving cycle
-                uint32_t receive_stamp = _this->tcdm_req->get_latency() + _this->fsm_timestamp;
-
-                //Push pending request queue
-                _this->pending_req_queue.push(receive_stamp);
-
-                //Add counter
-                _this->fsm_counter += 1;
             }
 
-            //Recieve Process
-            while((_this->pending_req_queue.size()!= 0) && (_this->pending_req_queue.front() <= _this->fsm_timestamp) ){
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][Storing] ---                           Receive TCDM resp\n");
-                // std::string out;
-                // for (int i = 0; i < _this->tcdm_req->get_size(); i += 2) {
-                //     char tmp[16];
-                //     snprintf(tmp, sizeof(tmp), "0x%02x%02x, ", _this->access_buffer[i + 1], _this->access_buffer[i]);
-                //     out += tmp;
-                // }
-                // _this->trace.msg(vp::Trace::LEVEL_TRACE,"%s\n", out.c_str());
-                _this->pending_req_queue.pop();
-            }
-
-            //Jump
-            if ((_this->fsm_counter >= _this->tcdm_block_total) && (_this->pending_req_queue.size() == 0))
+            bool iter_done = (_this->fsm_counter >= _this->tcdm_block_total)
+                          && _this->all_slots_free();
+            if (iter_done)
             {
                 _this->tcdm_block_total = 0;
                 _this->fsm_counter      = 0;
                 _this->fsm_timestamp    = 0;
-                _this->state.set(FINISHED);
+                _this->reg_fsm_state.set(FINISHED);
+                _this->reg_busy.set(1);
                 _this->event_enqueue(_this->fsm_event, 1);
 
                 //report
@@ -1418,24 +1769,35 @@ void LightRedmule::fsm_handler(vp::Block *__this, vp::ClockEvent *event)
                 _this->trace.msg("[LightRedmule] Finished : %0d ns ---> %0d ns | period = %0d ns (%0d cyc) | uti = %0.3f | runtime = %0d ns | GEMM id = %0d | FMT = %0d | M-N-K = %0d-%0d-%0d | X-W-Y = 0x%5x-0x%5x-0x%5x\n",
                     start_time_ns, end_time_ns, period_ns, period_clk, period_uti, _this->total_runtime, _this->num_matmul, _this->compute_able, _this->m_size, _this->n_size, _this->k_size, _this->x_addr, _this->w_addr, _this->y_addr);
             } else {
-                _this->state.set(STORING);
+                _this->reg_fsm_state.set(STORING);
+                _this->reg_busy.set(1);
                 _this->event_enqueue(_this->fsm_event, 1);
             }
             break;
         }
         case FINISHED: {
+            //Retire the job that just finished (no-op for jobs launched via the
+            //offload/custom-instruction path, which never touches job_pending)
+            _this->cxt_job_id[_this->cxt_use_ptr] = -1;
+            _this->cxt_use_ptr = 1 - _this->cxt_use_ptr;
+            if (_this->job_pending > 0) {
+                _this->job_pending--;
+            }
+
             //Reply Stalled Query
             if (_this->redmule_query == NULL)
             {
                 _this->done.sync(true); //send interrupt
-                _this->state.set(IDLE);
+                _this->reg_fsm_state.set(IDLE);
+                _this->reg_busy.set(0);
                 // IssOffloadInsnGrant<uint32_t> offload_grant = {
                 //     .result=0x0
                 // };
                 // _this->offload_grant_itf.sync(&offload_grant);
                 _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][FINISHED] GRANT core and Wait for query!\n");
             } else {
-                _this->state.set(ACKNOWLEDGE);
+                _this->reg_fsm_state.set(ACKNOWLEDGE);
+                _this->reg_busy.set(1);
             }
             _this->event_enqueue(_this->fsm_event, 1);
             break;
@@ -1444,7 +1806,8 @@ void LightRedmule::fsm_handler(vp::Block *__this, vp::ClockEvent *event)
             _this->redmule_query->get_resp_port()->resp(_this->redmule_query);
             _this->redmule_query = NULL;
             _this->done.sync(true); //send interrupt
-            _this->state.set(IDLE);
+            _this->reg_fsm_state.set(IDLE);
+            _this->reg_busy.set(0);
             // IssOffloadInsnGrant<uint32_t> offload_grant = {
             //     .result=0x0
             // };
@@ -1454,7 +1817,7 @@ void LightRedmule::fsm_handler(vp::Block *__this, vp::ClockEvent *event)
             break;
         }
         default:
-            _this->trace.fatal("[LightRedmule] INVALID RedMule Status: %d\n", _this->state);
+            _this->trace.fatal("[LightRedmule] INVALID RedMule Status: %d\n", _this->reg_fsm_state.get());
     }
 }
 
