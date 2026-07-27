@@ -17,61 +17,35 @@
 # Authors: Lorenzo Zuolo, Chips-IT (lorenzo.zuolo@chips.it)
 
 import gvsoc.systree
-import cpu.iss.riscv
-from cpu.iss.isa_gen.isa_smallfloats import *
-from cpu.iss.isa_gen.isa_pulpv2 import *
+from cpu.iss.isa_gen.isa_smallfloats import Xf16, Xf16alt
+from pulp.cpu.iss.cv32e40p_v2 import Cv32e40p, Cv32e40pConfig
 
-# Tentative model of the cv32e40x adapted from pulp_cores.py
-'''
-class CV32CoreTest(cpu.iss.riscv.RiscvCommon):
-    def __init__(self, parent, name, cluster_id: int, core_id: int,
-                 fetch_enable: bool=False, boot_addr: int=0, external_pccr: bool=False):
 
-        fc_isa = self.__build_fc_isa
-        super().__init__(parent, name, isa=fc_isa, riscv_dbg_unit=True,
-                         fetch_enable=fetch_enable, boot_addr=boot_addr,
-                         first_external_pcer=12, debug_handler=0x1a190800,
-                         misa=0x40000000, core="ri5ky", cluster_id=cluster_id,
-                         core_id=core_id, wrapper="pulp/cpu/iss/pulp_iss_wrapper.cpp",
-                         scoreboard=True, timed=True, handle_misaligned=True,
-                         external_pccr=external_pccr)
+# magia-v3 control core: CV32E40P on the iss_v2 modular core (Marco Paci's
+# model). Same FP recipe as the previous v1 core (zfinx + the half-float
+# extensions Xf16/Xf16alt) plus the PULP/CoreV extensions. Smallfloats are
+# passed as extra_extensions so the Cv32e40p wrapper emits them before
+# CoreV2 (rvXf16.hpp pulls in the iss_v2 macros that pulp_v2.hpp needs).
+class CV32CtrlCore(Cv32e40p):
 
-        self.add_c_flags([
-            "-DPIPELINE_STALL_THRESHOLD=1",
-            "-DCONFIG_ISS_CORE=ri5cy",
-            '-DCONFIG_GVSOC_ISS_NO_MSTATUS_FS=1'
-        ])
+    # Own ISA-cache tag: the magia cores add the half-float extensions on top
+    # of the vanilla cv32e40p_v2 ISA, so they must not share its cache entry.
+    isa_name: str = 'magia_cv32e40p'
 
-    def __build_fc_isa():
-        exts = [ PulpV2(), Xf16(), Xf16alt(), Xf8(), Xfvec(), Xfaux() ]
-        isa = cpu.iss.isa_gen.isa_riscv_gen.RiscvIsa('fc', 'rv32imc', extensions=exts)
-        return isa
-'''
-
-# Basic rv32 core
-class CV32CtrlCore(cpu.iss.riscv.RiscvCommon):
     def __init__(self, parent: gvsoc.systree.Component, name: str, binaries: list=[],
                  fetch_enable: bool=False, boot_addr: int=0, timed: bool=True,
                  core_id: int=0):
 
-        # Properties
-        isa_str = 'rv32imfc'
-        misa = 0x40000000
-        debug_handler = 0x1a190800
-        fetch_enable = False
-        riscv_exceptions = False
-        zfinx = True
+        config = Cv32e40pConfig(isa='rv32imfc', boot_addr=boot_addr,
+                                hart_id=core_id, fetch_enable=fetch_enable,
+                                htif=False)
 
-        # Instantiates the ISA from the string.
-        isa = cpu.iss.isa_gen.isa_riscv_gen.RiscvIsa('cv32-base', isa_str, extensions=[Xf16alt(), Xf16(), PulpV2(hwloop=True,elw=True)])
-
-        super().__init__(parent, name, isa=isa, misa=misa, core_id=core_id,
-                         debug_handler=debug_handler, fetch_enable=fetch_enable,
-                         riscv_exceptions=riscv_exceptions, zfinx=zfinx)
-
-        # TODO check later
-        self.add_c_flags([
-            "-DPIPELINE_STALL_THRESHOLD=1",
-            "-DCONFIG_ISS_CORE_DIR=pulp/chips/magia_v3/ctrl_core",
-            "-DCONFIG_GVSOC_ISS_HWLOOP=1",
-        ])
+        # irq_external=True -> PULP vectored irq_req/irq_ack handshake + event
+        # load (cv.elw): the magia programming model has the ctrl core wait for
+        # events from the tile's PULP event unit via cv.elw, so it needs the
+        # IrqExternal personality (like the old v1 ctrl core, riscv_exceptions
+        # =False). io_v2=False keeps the io_v1 memory ports.
+        super().__init__(parent, name, config=config,
+                         fpu=False, zfinx=True, pulp=True,
+                         extra_extensions=[Xf16(), Xf16alt()],
+                         io_v2=False, irq_external=True, elw=True)

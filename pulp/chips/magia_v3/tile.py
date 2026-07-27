@@ -284,7 +284,9 @@ class MagiaV3Tile(gvsoc.systree.Component):
             # Bind pulp cluster cores data --> obi interconnect
             for pulp_id in range(0,tree.nb_pulp_cores):
                 pulp_cores[pulp_id].o_DATA(obi_xbar.i_INPUT())
-                pulp_cores[pulp_id].o_DATA_DEBUG(obi_xbar.i_INPUT())
+                # o_DATA_DEBUG not present on the iss_v2 CV32E40P core (same as
+                # the Spatz iss_v2 core above); the debug data master is unused.
+                # pulp_cores[pulp_id].o_DATA_DEBUG(obi_xbar.i_INPUT())
 
             # Bind: pulp cluster cores-> icache
             for pulp_id in range(0,tree.nb_pulp_cores):
@@ -303,7 +305,9 @@ class MagiaV3Tile(gvsoc.systree.Component):
 
         # Bind: cv32 core data -> obi interconnect
         core_cv32.o_DATA(obi_xbar.i_INPUT())
-        core_cv32.o_DATA_DEBUG(obi_xbar.i_INPUT())
+        # o_DATA_DEBUG not present on the iss_v2 CV32E40P core; debug data
+        # master unused (same as the Spatz iss_v2 core).
+        # core_cv32.o_DATA_DEBUG(obi_xbar.i_INPUT())
 
         # Bind: cv32 core -> icache
         core_cv32.o_FETCH(cv32_i_cache.i_INPUT(0))

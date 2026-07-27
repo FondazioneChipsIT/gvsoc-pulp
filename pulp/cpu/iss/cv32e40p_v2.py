@@ -24,7 +24,7 @@ from typing import Iterable
 from typing_extensions import override
 from gvsoc.systree import Component
 from cpu.iss_v2.riscv import (RiscvCommon, IssModule, ExecInOrder,
-                              Regfile, LsuV2, Hwloop)
+                              Regfile, Lsu, LsuV2, Hwloop, IrqExternal)
 from cpu.iss.isa_gen.isa_gen import Isa, IsaSubset
 from cpu.iss.isa_gen.isa_riscv_gen import RiscvIsa
 from cpu.iss.isa_gen.isa_cv32e40pv2 import CoreV2
@@ -236,13 +236,29 @@ class Cv32e40p(RiscvCommon):
     def __init__(self, parent: Component, name: str, config: Cv32e40pConfig,
                  fpu: bool=False, zfinx: bool=False, pulp: bool=True,
                  num_mhpmcounters: int=1,
-                 extra_extensions: Iterable[IsaSubset] = ()):
+                 extra_extensions: Iterable[IsaSubset] = (),
+                 io_v2: bool=True, irq_external: bool=False,
+                 elw: bool=False):
 
         # pulp and zfinx change what gets compiled behind one ISA string,
         # so both are part of the cache key and of the generated ISA name.
         isa_tag = f"{config.isa}_pulp" if pulp else config.isa
         if zfinx:
             isa_tag += '_zfinx'
+        # The LSU choice (io_v2 vs io_v1) changes the ISA include list
+        # (LsuV2 adds lsu_v2.hpp), so the two variants must not share an
+        # ISA instance -- same reasoning as Spatz's `_iov2` isa key.
+        if not io_v2:
+            isa_tag += '_iov1'
+        # The irq module choice changes the compiled ISS sources/defines
+        # (IrqExternal vs Cv32e40pIrq), so the two variants need distinct
+        # ISA instances too.
+        if irq_external:
+            isa_tag += '_extirq'
+        # cv.elw (event load) is an extra decoded instruction, so it changes
+        # the ISA and needs its own instance.
+        if elw:
+            isa_tag += '_elw'
         cache_key = (type(self).isa_name, isa_tag)
         isa_instance: Isa | None = isa_instances.get(cache_key)
 
@@ -251,7 +267,9 @@ class Cv32e40p(RiscvCommon):
                 *extra_extensions,
             ]
             if pulp:
-                extensions.append(CoreV2())
+                # elw enables cv.elw (event load word); the magia ctrl core
+                # waits on the PULP event unit via cv.elw.
+                extensions.append(CoreV2(elw=elw))
 
             isa_instance = RiscvIsa(f"{type(self).isa_name}_{isa_tag}",
                 config.isa, extensions=extensions)
@@ -272,14 +290,21 @@ class Cv32e40p(RiscvCommon):
             misa |= 1 << 23   # X
 
         modules: dict[str, IssModule] = {
-            'irq': Cv32e40pIrq(),
+            # Cv32e40pIrq = RISC-V interrupts (mie/mip, per-line mei/msi/mti
+            # slave ports; i_IRQ(n) works). IrqExternal = PULP/ri5cy vectored
+            # handshake (irq_req/irq_ack), needed by cores wired to the PULP
+            # event unit (e.g. the magia-v3 control core).
+            'irq': IrqExternal() if irq_external else Cv32e40pIrq(),
             'core': Cv32e40pCoreModule(),
             'exception': Cv32e40pExceptionModule(),
             'event': Cv32e40pEvent(),
             'csr': Cv32e40pCsr(fpu=fpu, zfinx=zfinx, pulp=pulp,
                                num_mhpmcounters=num_mhpmcounters),
             'exec': Cv32e40pExec(),
-            'lsu': LsuV2(),
+            # io_v2 by default (standalone co-sim SoC); magia-v3 passes
+            # io_v2=False so the data/fetch ports speak io_v1, matching the
+            # io_v1 routers/caches of the tile interconnect.
+            'lsu': LsuV2() if io_v2 else Lsu(),
             'regfile': Cv32e40pRegfileModule(),
             'hwloop': Hwloop(),
         }

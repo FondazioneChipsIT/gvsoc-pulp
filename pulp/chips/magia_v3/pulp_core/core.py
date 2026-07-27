@@ -17,61 +17,29 @@
 # Authors: Lorenzo Zuolo, Chips-IT (lorenzo.zuolo@chips.it)
 
 import gvsoc.systree
-import cpu.iss.riscv
-from cpu.iss.isa_gen.isa_smallfloats import *
-from cpu.iss.isa_gen.isa_pulpv2 import *
+from cpu.iss.isa_gen.isa_smallfloats import Xf16, Xf16alt
+from pulp.cpu.iss.cv32e40p_v2 import Cv32e40p, Cv32e40pConfig
 
-# Tentative model of the cv32e40x adapted from pulp_cores.py
-'''
-class CV32CoreTest(cpu.iss.riscv.RiscvCommon):
-    def __init__(self, parent, name, cluster_id: int, core_id: int,
-                 fetch_enable: bool=False, boot_addr: int=0, external_pccr: bool=False):
 
-        fc_isa = self.__build_fc_isa
-        super().__init__(parent, name, isa=fc_isa, riscv_dbg_unit=True,
-                         fetch_enable=fetch_enable, boot_addr=boot_addr,
-                         first_external_pcer=12, debug_handler=0x1a190800,
-                         misa=0x40000000, core="ri5ky", cluster_id=cluster_id,
-                         core_id=core_id, wrapper="pulp/cpu/iss/pulp_iss_wrapper.cpp",
-                         scoreboard=True, timed=True, handle_misaligned=True,
-                         external_pccr=external_pccr)
+# magia-v3 PULP core: CV32E40P on the iss_v2 modular core (Marco Paci's
+# model). Same FP recipe as the control core (zfinx + Xf16/Xf16alt + CoreV),
+# but keeps the RISC-V interrupt model (Cv32e40pIrq): these cores are driven
+# through i_IRQ(11)=mei, not the PULP event-unit handshake, so irq_external
+# stays False (the old v1 pulp core used riscv_exceptions=True). That makes
+# the irq module differ from the control core, hence a distinct ISA instance.
+class CV32PulpCore(Cv32e40p):
 
-        self.add_c_flags([
-            "-DPIPELINE_STALL_THRESHOLD=1",
-            "-DCONFIG_ISS_CORE=ri5cy",
-            '-DCONFIG_GVSOC_ISS_NO_MSTATUS_FS=1'
-        ])
+    isa_name: str = 'magia_cv32e40p'
 
-    def __build_fc_isa():
-        exts = [ PulpV2(), Xf16(), Xf16alt(), Xf8(), Xfvec(), Xfaux() ]
-        isa = cpu.iss.isa_gen.isa_riscv_gen.RiscvIsa('fc', 'rv32imc', extensions=exts)
-        return isa
-'''
-
-# Basic rv32 core with standard RISC-V exceptions (riscv_exceptions=True → irq_riscv.cpp → mei port)
-class CV32PulpCore(cpu.iss.riscv.RiscvCommon):
     def __init__(self, parent: gvsoc.systree.Component, name: str, binaries: list=[],
                  fetch_enable: bool=False, boot_addr: int=0, timed: bool=True,
                  core_id: int=0):
 
-        # Properties
-        isa_str = 'rv32imfc'
-        misa = 0x40000000
-        debug_handler = 0x1a190800
-        fetch_enable = False
-        riscv_exceptions = True
-        zfinx = True
+        config = Cv32e40pConfig(isa='rv32imfc', boot_addr=boot_addr,
+                                hart_id=core_id, fetch_enable=fetch_enable,
+                                htif=False)
 
-        # Instantiates the ISA from the string.
-        isa = cpu.iss.isa_gen.isa_riscv_gen.RiscvIsa('cv32-base', isa_str, extensions=[Xf16alt(), Xf16(), PulpV2(hwloop=True,elw=True)])
-
-        super().__init__(parent, name, isa=isa, misa=misa, core_id=core_id,
-                         debug_handler=debug_handler, fetch_enable=fetch_enable,
-                         riscv_exceptions=riscv_exceptions, zfinx=zfinx)
-
-        # TODO check later
-        self.add_c_flags([
-            "-DPIPELINE_STALL_THRESHOLD=1",
-            "-DCONFIG_ISS_CORE_DIR=pulp/chips/magia_v3/pulp_core",
-            "-DCONFIG_GVSOC_ISS_HWLOOP=1",
-        ])
+        super().__init__(parent, name, config=config,
+                         fpu=False, zfinx=True, pulp=True,
+                         extra_extensions=[Xf16(), Xf16alt()],
+                         io_v2=False)

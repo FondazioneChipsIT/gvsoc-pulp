@@ -73,8 +73,8 @@ class MagiaArch:
     NB_PULP_CORES       = 8
 
     # Tiles assignment
-    N_TILES_X           = 4
-    N_TILES_Y           = 4
+    N_TILES_X           = 1
+    N_TILES_Y           = 1
 
     ENABLE_PCIE_VFIO            = False
 
