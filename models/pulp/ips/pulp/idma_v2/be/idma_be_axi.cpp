@@ -16,6 +16,10 @@
 
 /*
  * Authors: Germain Haugou, ETH Zurich (germain.haugou@iis.ee.ethz.ch)
+ *          Lorenzo Zuolo, Chips-IT (lorenzo.zuolo@chips.it)
+ *          - read path: fixed the fast path bypassing a non-empty
+ *            read_push_queue, which delivered chunks out of order to a
+ *            destination back-end that back-pressures per chunk
  */
 
 #include <algorithm>
@@ -401,7 +405,17 @@ vp::IoRespAck IDmaBeAxi::resp_meth(vp::Block *__this, vp::IoReq *req)
     // this saves a 1-cycle fsm hop per beat and keeps the steady-state read
     // pipeline at 1 beat/cycle. When the destination is back-pressured we fall
     // back to queueing and let fsm_handler drain when it becomes ready.
-    if (self->be->is_ready_to_accept_data(info->transfer))
+    //
+    // The shortcut may only be taken when nothing is queued: write_data()
+    // carries no address, so the destination BE places chunks at its own
+    // sequential cursor and delivery order *is* placement order. Bypassing a
+    // non-empty read_push_queue would let a later beat overtake an earlier one
+    // and the two would land in each other's place. That happens for real with
+    // a destination that back-pressures per chunk (the TCDM back-end takes one
+    // chunk at a time): beat n gets queued while the destination is busy, beat
+    // n+1 finds it free and jumps the queue, and every burst comes out with its
+    // middle beats swapped.
+    if (self->read_push_queue.empty() && self->be->is_ready_to_accept_data(info->transfer))
     {
         self->read_ack_queue.push({info, beat_size});
         self->be->write_data(info->transfer, chunk, beat_size);

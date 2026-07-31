@@ -16,6 +16,9 @@
 
 /*
  * Authors: Germain Haugou, ETH Zurich (germain.haugou@iis.ee.ethz.ch)
+ *          Lorenzo Zuolo, Chips-IT (lorenzo.zuolo@chips.it)
+ *          - optional local (TCDM) back-end pair and address-based
+ *            back-end selection
  */
 
 #pragma once
@@ -203,11 +206,18 @@ public:
 /**
  * @brief Backend
  *
- * The backend takes care of moving data between source and destination through
- * a single protocol back-end pair (one read, one write). All addresses are
- * routed unconditionally to that back-end, matching the RTL where the iDMA
- * has a single AXI master and any "TCDM-local" shortcut would have to be
- * synthesised by an external AXI→memory bridge.
+ * The backend takes care of moving data between source and destination.
+ *
+ * By default it drives a single protocol back-end pair (one read, one write)
+ * and routes every address to it, matching an iDMA whose only egress is its
+ * AXI master pair (local TCDM accesses then loop back through the
+ * interconnect, like in RTL).
+ *
+ * An iDMA that does have a private port to its local memory — magia's tile
+ * iDMAs, which own both an AXI master and a TCDM master — passes a second
+ * back-end pair: addresses inside [loc_base, loc_base + loc_size) are then
+ * served by the local pair and everything else by the external one, as in the
+ * v1 model. Leaving the local pair at nullptr keeps the single-path behaviour.
  */
 class IDmaBe : public vp::Block, public IdmaTransferConsumer, public IdmaBeProducer
 {
@@ -217,11 +227,19 @@ public:
      *
      * @param idma The top iDMA block.
      * @param me The middle-end
-     * @param be_read  The protocol back-end used for every read burst.
-     * @param be_write The protocol back-end used for every write burst.
+     * @param be_read  The protocol back-end used for read bursts outside the
+     *  local area (or for every read burst when no local pair is given).
+     * @param be_write The protocol back-end used for write bursts outside the
+     *  local area (or for every write burst when no local pair is given).
+     * @param loc_be_read  Optional back-end for read bursts falling into the
+     *  local area. When given, 'loc_base' and 'loc_size' are read from the
+     *  component config to delimit that area.
+     * @param loc_be_write Optional back-end for write bursts falling into the
+     *  local area.
      */
     IDmaBe(vp::Component *idma, IdmaTransferProducer *me,
-        IdmaBeConsumer *be_read, IdmaBeConsumer *be_write);
+        IdmaBeConsumer *be_read, IdmaBeConsumer *be_write,
+        IdmaBeConsumer *loc_be_read = nullptr, IdmaBeConsumer *loc_be_write = nullptr);
 
     void reset(bool active);
 
@@ -261,8 +279,16 @@ private:
     IdmaBeConsumer *current_transfer_src_be;
     // Destination backend protocol of the current transfer
     IdmaBeConsumer *current_transfer_dst_be;
-    // Read and write protocol back-ends. Every burst is routed through
-    // these, regardless of address.
+    // Read and write protocol back-ends. Every burst outside the local area
+    // (i.e. every burst when there is no local area) is routed through these.
     IdmaBeConsumer *be_read;
     IdmaBeConsumer *be_write;
+    // Optional read and write back-ends for the local area. NULL when the iDMA
+    // has a single egress path.
+    IdmaBeConsumer *loc_be_read;
+    IdmaBeConsumer *loc_be_write;
+    // Local area, only meaningful when the local back-ends are set. A zero
+    // loc_size also disables the local path.
+    uint64_t loc_base;
+    uint64_t loc_size;
 };

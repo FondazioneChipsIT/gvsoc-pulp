@@ -36,6 +36,26 @@ This README focuses only on **MAGIA v2 usage and architecture**.
 make build TARGETS=magia_v2
 ```
 
+This builds the default 4x4 mesh. **The mesh size belongs to the target name**, and
+the same name must be used to build and to run:
+
+```bash
+make build TARGETS="magia_v2:n_tiles_x=2,n_tiles_y=2"
+```
+
+Several meshes can be built side by side, each getting its own compiled tree:
+
+```bash
+make build TARGETS="magia_v2:n_tiles_x=4,n_tiles_y=4;magia_v2:n_tiles_x=2,n_tiles_y=2"
+```
+
+The reason is that GVSoC compiles the whole component tree of a target into
+`libplatform_tree_<target>.so`, baking in both the shape of the tree and every
+model's typed configuration; `gvrun` resolves that library from the target name.
+A run-time knob that reshapes the tree would invalidate it, and the fallback path
+cannot carry the typed configurations — so a mesh size passed as `--attr` at run
+time is rejected. See `MagiaTree` in `arch.py`.
+
 This builds the MAGIA v2 virtual platform and installs the `gvrun` executable under:
 
 ```
@@ -48,22 +68,19 @@ This builds the MAGIA v2 virtual platform and installs the `gvrun` executable un
 
 ```bash
 ./install/bin/gvrun \
-  --target magia_v2 \
+  --target magia_v2:n_tiles_x=4,n_tiles_y=4 \
   --work-dir /home/gvsoc/Documents/test \
   --param binary=/home/gvsoc/Documents/magia-sdk/build/bin/test_mm_os \
-  run \
-  --attr magia_v2/n_tiles_x=4 \
-  --attr magia_v2/n_tiles_y=4
+  run
 ```
 
 ### Command-line Parameters
 
 | Parameter | Description |
 |---------|-------------|
+| `--target magia_v2:n_tiles_x=X,n_tiles_y=Y` | Mesh size; part of the target name, must match the one built |
 | `--work-dir` | Directory where GVSoC writes simulation outputs |
 | `--param binary=...` | Path to the ELF binary to be executed |
-| `--attr magia_v2/n_tiles_x` | Number of tiles in X dimension |
-| `--attr magia_v2/n_tiles_y` | Number of tiles in Y dimension |
 
 The total number of tiles is:
 
@@ -79,15 +96,16 @@ If **Spatz** is enabled in `arch.py`, you must also provide the Spatz boot ROM:
 
 ```bash
 ./install/bin/gvrun \
-  --target magia_v2 \
+  --target magia_v2:n_tiles_x=4,n_tiles_y=4 \
   --work-dir /home/gvsoc/Documents/test \
   --param binary=/home/gvsoc/Documents/MAGIA/sw/tests/mesh_dotp_spatz_test/build/verif \
   --trace-level=trace \
-  run \
-  --attr magia_v2/n_tiles_x=4 \
-  --attr magia_v2/n_tiles_y=4 \
-  --attr magia_v2/spatz_romfile=/home/gvsoc/Documents/MAGIA/spatz/bootrom/spatz_init.bin
+  --attr magia_v2/spatz_romfile=/home/gvsoc/Documents/MAGIA/spatz/bootrom/spatz_init.bin \
+  run
 ```
+
+`spatz_romfile` stays a run-time `--attr`: it feeds a `Runtime`-annotated model
+field, so it is overlaid at run time and never enters the compiled tree.
 
 ### Additional Parameter
 
@@ -135,11 +153,9 @@ make build TARGETS=magia_v2
 
 ```bash
 ./install/bin/gvrun \
-  --target magia_v2 \
+  --target magia_v2:n_tiles_x=4,n_tiles_y=4 \
   --work-dir /home/gvsoc/Documents/test \
-  run \
-  --attr magia_v2/n_tiles_x=4 \
-  --attr magia_v2/n_tiles_y=4
+  run
 ```
 
 GVSoC will start and **block** waiting for QEMU to connect on `/tmp/gvsoc.sock`.

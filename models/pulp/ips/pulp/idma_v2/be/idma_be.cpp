@@ -16,6 +16,9 @@
 
 /*
  * Authors: Germain Haugou, ETH Zurich (germain.haugou@iis.ee.ethz.ch)
+ *          Lorenzo Zuolo, Chips-IT (lorenzo.zuolo@chips.it)
+ *          - optional local (TCDM) back-end pair and address-based
+ *            back-end selection
  */
 
 #include <vp/vp.hpp>
@@ -24,7 +27,8 @@
 
 
 IDmaBe::IDmaBe(vp::Component *idma, IdmaTransferProducer *me,
-    IdmaBeConsumer *be_read, IdmaBeConsumer *be_write)
+    IdmaBeConsumer *be_read, IdmaBeConsumer *be_write,
+    IdmaBeConsumer *loc_be_read, IdmaBeConsumer *loc_be_write)
 :   Block(idma, "be"),
     fsm_event(this, &IDmaBe::fsm_handler)
 {
@@ -32,19 +36,39 @@ IDmaBe::IDmaBe(vp::Component *idma, IdmaTransferProducer *me,
     this->me = me;
     this->be_read = be_read;
     this->be_write = be_write;
+    this->loc_be_read = loc_be_read;
+    this->loc_be_write = loc_be_write;
 
     // Declare our own trace so that we can individually activate traces
     this->traces.new_trace("trace", &this->trace, vp::DEBUG);
+
+    // Local area description, only used when a local back-end pair was given.
+    // Without it, every address goes to the external pair.
+    this->loc_base = 0;
+    this->loc_size = 0;
+    if (loc_be_read != nullptr && loc_be_write != nullptr)
+    {
+        this->loc_base = idma->get_js_config()->get_int("loc_base");
+        this->loc_size = idma->get_js_config()->get_int("loc_size");
+    }
 }
 
 
 
-IdmaBeConsumer *IDmaBe::get_be_consumer(uint64_t /*base*/, uint64_t /*size*/, bool is_read)
+IdmaBeConsumer *IDmaBe::get_be_consumer(uint64_t base, uint64_t size, bool is_read)
 {
-    // Single protocol path: all bursts go through the read/write back-end
-    // pair regardless of address. Local TCDM accesses, if any, must loop
-    // back through the external interconnect just like in RTL.
-    return is_read ? this->be_read : this->be_write;
+    // Without a local area every burst goes through the external pair: local
+    // accesses, if any, loop back through the interconnect just like in RTL.
+    if (this->loc_size == 0)
+    {
+        return is_read ? this->be_read : this->be_write;
+    }
+
+    // Otherwise return the local back-end when the burst falls entirely inside
+    // the local area, and the external one otherwise.
+    bool is_loc = base >= this->loc_base && base + size <= this->loc_base + this->loc_size;
+    return is_loc ? (is_read ? this->loc_be_read : this->loc_be_write) :
+        (is_read ? this->be_read : this->be_write);
 }
 
 

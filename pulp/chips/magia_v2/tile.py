@@ -221,7 +221,7 @@ class MagiaV2Tile(gvsoc.systree.Component):
         if MagiaArch.SPATZ_ENABLE:
             # Bind: snitch spatz core data -> obi interconnect
             snitch_spatz.o_DATA(obi_xbar.i_INPUT())
-            snitch_spatz.o_DATA_DEBUG(obi_xbar.i_INPUT())
+            #snitch_spatz.o_DATA_DEBUG(obi_xbar.i_INPUT())
 
             # Bind: snitch spatz core -> snitch spatz icache
             snitch_spatz.o_FETCH(snitch_spatz_i_cache.i_INPUT(0))

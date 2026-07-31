@@ -18,9 +18,16 @@
 import gvsoc.systree
 import gvsoc.runner
 import os
-from pulp.chips.magia_v2.arch import MagiaTree
+from pulp.chips.magia_v2.arch import MagiaTree, MagiaArch
 
-from pulp.chips.magia_v2.soc import MagiaV2Soc
+# Chip-wide IO protocol selection (see MagiaArch.ENABLE_IO_V2). The two
+# descriptions are complete siblings: soc.py/tile.py speak the legacy io (v1)
+# protocol, soc_v2.py/tile_v2.py speak io_v2. Nothing is shared between them
+# apart from arch.py, so no v1<->v2 adapter is ever needed.
+if MagiaArch.ENABLE_IO_V2:
+    from pulp.chips.magia_v2.soc_v2 import MagiaV2Soc
+else:
+    from pulp.chips.magia_v2.soc import MagiaV2Soc
 from gvrun.parameter import TargetParameter
 
 class MagiaV2Board(gvsoc.systree.Component):
