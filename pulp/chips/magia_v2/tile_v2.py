@@ -290,10 +290,30 @@ class MagiaV2Tile(gvsoc.systree.Component):
             kind=KIND_BEAT, width=MagiaArch.BYTES_PER_WORD,
             max_pending_bursts_per_input=MagiaDSE.TILE_OBI_XBAR_MAX_BURSTS))
 
-        # Wide fan-in of the two iDMAs towards the NoC wide channel. On the v1
-        # protocol the four AXI masters shared the tile's wide_output port; io_v2
-        # needs one port each, so they are arbitrated here at the NoC wide width
-        # (beat streaming, which is also what the RTL mux does).
+        # Wide fan-in of the two iDMAs towards the NoC wide channel.
+        #
+        # This has no counterpart in the RTL, where the tile drives a single wide
+        # AXI port and the two iDMAs own disjoint channel sets of it: AR/R belong
+        # to iDMA0 (which only ever reads, L2 -> L1) and AW/W/B to iDMA1 (which
+        # only ever writes, L1 -> L2). It exists because the NI has a single wide
+        # slave port and an io_v2 slave port binds exactly one master, while the
+        # iDMA model exposes its read and write back-ends as separate masters —
+        # four here, of which two carry traffic under the convention above.
+        #
+        # It does not add the arbitration the RTL lacks. With shared_rw_channel
+        # left false the beat router keeps two independent channels and forwards
+        # one read beat *and* one write beat per cycle, so iDMA0's reads never
+        # queue behind iDMA1's writes: the AR/R versus AW/W/B split above is
+        # preserved. What it does add is one cycle of head-of-burst registration
+        # (a beat accepted on cycle N is forwarded from N+1 on, pipelined, so
+        # only the latency of a burst grows, not its rate) plus the outstanding
+        # burst budget below.
+        #
+        # A cheaper fan-in is not available on this plane: the untimed router
+        # declares single-req inputs, so a beat master reaching it would go
+        # through a beat-to-single-req adapter, losing beat streaming and the
+        # NoC's 4 KiB burst-legality guarantee. That is why the L2 fan-in in
+        # soc_v2.py can be untimed and this one cannot.
         wide_xbar = router_v2.Router(self, f'tile-{tid}-wide-xbar', config=RouterConfig(
             kind=KIND_BEAT, width=MagiaArch.TILE_WIDE_WIDTH,
             max_pending_bursts_per_input=MagiaDSE.TILE_WIDE_XBAR_MAX_BURSTS))
