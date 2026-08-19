@@ -219,7 +219,7 @@ class MagiaV3Tile(gvsoc.systree.Component):
 
         if MagiaArch.PULP_ENABLE or MagiaArch.SPATZ_ENABLE:
             # Cluster control registers
-            cluster_regs = ClusterRegs(self, f'tile-{tid}-cluster-regs', nb_pulp_cores=MagiaArch.NB_PULP_CORES)
+            cluster_regs = ClusterRegs(self, f'tile-{tid}-cluster-regs', nb_pulp_cores=tree.nb_pulp_cores)
 
         # Data scratchpad
         l1_tcdm = MagiaTileTcdm(self, f'tile-{tid}-tcdm', tree, parser)

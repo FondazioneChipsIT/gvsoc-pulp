@@ -17,6 +17,7 @@
 # Authors: Lorenzo Zuolo, Chips-IT (lorenzo.zuolo@chips.it)
 
 from gvrun.attribute import Tree, Value
+from gvrun.parameter import TargetParameter
 
 class MagiaArch:
     # Single tile address map from magia_tile_pkg.sv
@@ -79,12 +80,39 @@ class MagiaArch:
     ENABLE_PCIE_VFIO            = False
 
 class MagiaTree(Tree):
+    """Customizable knobs of the platform.
+
+    The tree-reshaping knobs (mesh size n_tiles_x/n_tiles_y and the per-tile
+    nb_pulp_cores) are **target parameters**, i.e. they belong to the target
+    *name*, not to the run command line:
+
+        make TARGETS="magia_v3:n_tiles_x=2,n_tiles_y=2" build
+        gvrun --target=magia_v3:n_tiles_x=2,n_tiles_y=2 --param binary=<elf> run
+
+    gvsoc bakes the whole component tree (its shape + every model's typed
+    config) into libplatform_tree_<target>.so and checks it against the systree
+    it rebuilds at run time. Reshaping the tree from a run-time --attr
+    invalidates that library and drops to the JSON fallback, which cannot carry
+    the typed (io_v2 / iss_v2) configurations -> a component comes up with an
+    uninitialized config and the sim dies (std::bad_alloc) for no visible
+    reason. Embedding the reshaping knobs in the target name makes build and run
+    coherent by construction. Hence these are TargetParameters, not Values:
+    --attr magia_v3/n_tiles_x=... is now rejected instead of silently
+    mismatching.
+
+    spatz_romfile stays a plain run-time attribute (--attr
+    magia_v3/spatz_romfile=<path>) on purpose: it is a stim_file path that
+    differs between build and run and is overlaid at run time, never entering
+    the compiled tree.
+    """
     def __init__(self, parent, name):
         super().__init__(parent, name)
-        self.n_tiles_x = Value(self, 'n_tiles_x', MagiaArch.N_TILES_X, cast=int,
-            description='Number of tiles on X dimension')
-        self.n_tiles_y = Value(self, 'n_tiles_y', MagiaArch.N_TILES_Y, cast=int,
-            description='Number of tiles on Y dimension')
+        self.n_tiles_x = TargetParameter(parent, name='n_tiles_x',
+            value=MagiaArch.N_TILES_X, cast=int,
+            description='Number of tiles on X dimension').value
+        self.n_tiles_y = TargetParameter(parent, name='n_tiles_y',
+            value=MagiaArch.N_TILES_Y, cast=int,
+            description='Number of tiles on Y dimension').value
 
         self.nb_clusters = self.n_tiles_x*self.n_tiles_y
 
@@ -94,8 +122,9 @@ class MagiaTree(Tree):
             print("SNITCH_SPATZ complex enabled")
 
         if MagiaArch.PULP_ENABLE:
-            self.nb_pulp_cores = Value(self, 'nb_pulp_cores', MagiaArch.NB_PULP_CORES, cast=int,
-                description='Number of pulp cores')
+            self.nb_pulp_cores = TargetParameter(parent, name='nb_pulp_cores',
+                value=MagiaArch.NB_PULP_CORES, cast=int,
+                description='Number of pulp cores').value
             print(f"PULP complex enabled with {self.nb_pulp_cores} cores")
 
 class MagiaDSE:

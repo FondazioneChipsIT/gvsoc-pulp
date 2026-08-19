@@ -34,15 +34,35 @@ This README focuses only on **MAGIA v3 usage and architecture**.
 
 ## Build the MAGIA v3 Platform
 
+The mesh size (`n_tiles_x`, `n_tiles_y`) and the number of PULP cores per tile
+(`nb_pulp_cores`) are **target parameters**: they are part of the target *name*
+and are baked into the compiled platform tree at build time. Pass them after the
+target name, `key=value` separated by commas:
+
 ```bash
-make build TARGETS=magia_v3
+make build TARGETS="magia_v3:n_tiles_x=2,n_tiles_y=2,nb_pulp_cores=8"
 ```
 
-This builds the MAGIA v3 virtual platform and installs the `gvrun` executable under:
+Defaults (`4×4`, `nb_pulp_cores=8`) are used if omitted, i.e. `TARGETS=magia_v3`.
+Several meshes can be built side by side (`;`-separated):
 
+```bash
+make build TARGETS="magia_v3:n_tiles_x=4,n_tiles_y=4,nb_pulp_cores=8;magia_v3:n_tiles_x=1,n_tiles_y=1,nb_pulp_cores=8"
 ```
-./install/bin/gvrun
-```
+
+This installs the `gvrun` executable under `./install/bin/gvrun`.
+
+> **Important — build and run must use the SAME target string.**
+> gvsoc compiles the whole component tree (its shape *and* every model's typed
+> config) into `libplatform_tree_magia_v3.so` and checks it against the tree it
+> rebuilds at run time. Reshaping the tree from a run-time `--attr` invalidates
+> that library, drops to the JSON fallback (which cannot carry the typed io_v2 /
+> iss_v2 configs), and the simulation dies with `std::bad_alloc`. So the mesh /
+> core count live in the target name, not in `--attr`: pass the *identical*
+> `--target=magia_v3:n_tiles_x=..,n_tiles_y=..,nb_pulp_cores=..` at run time.
+> `--attr magia_v3/n_tiles_x=...` is now rejected on purpose.
+> Only `spatz_romfile` stays a run-time `--attr` (it is a path overlaid at run
+> time, never baked into the tree).
 
 ---
 
@@ -96,20 +116,17 @@ SDK build parameters:
 
 ```bash
 ./install/bin/gvrun \
-  --target magia_v3 \
+  --target=magia_v3:n_tiles_x=4,n_tiles_y=4,nb_pulp_cores=8 \
   --work-dir /home/gvsoc/Documents/test \
   --param binary=/home/gvsoc/Documents/chips-magia-sdk/build/bin/<test_name> \
-  run \
-  --attr magia_v3/n_tiles_x=4 \
-  --attr magia_v3/n_tiles_y=4
+  run
 ```
 
 Command-line parameters:
 
+- **`--target=magia_v3:...`** — target string; **must be identical to the one used at build time**. Carries the tree-reshaping knobs `n_tiles_x`, `n_tiles_y`, `nb_pulp_cores`
 - **`--work-dir`** — directory where GVSoC writes simulation outputs
 - **`--param binary=...`** — path to the ELF binary to be executed (CV32 binary)
-- **`--attr magia_v3/n_tiles_x`** — number of tiles in X dimension
-- **`--attr magia_v3/n_tiles_y`** — number of tiles in Y dimension
 
 The total number of tiles is:
 
@@ -121,20 +138,18 @@ NB_CLUSTERS = n_tiles_x × n_tiles_y
 
 ## Running with PULP Cluster Enabled
 
-When the binary includes a PULP workload, pass the number of PULP cores via `nb_pulp_cores`:
+When the binary includes a PULP workload, pass the number of PULP cores via
+`nb_pulp_cores` in the target string:
 
 ```bash
 ./install/bin/gvrun \
-  --target magia_v3 \
+  --target=magia_v3:n_tiles_x=1,n_tiles_y=1,nb_pulp_cores=8 \
   --work-dir /home/gvsoc/Documents/test \
   --param binary=/home/gvsoc/Documents/chips-magia-sdk/build/bin/hello_pulp \
-  run \
-  --attr magia_v3/n_tiles_x=1 \
-  --attr magia_v3/n_tiles_y=1 \
-  --attr magia_v3/nb_pulp_cores=8
+  run
 ```
 
-- **`--attr magia_v3/nb_pulp_cores`** — number of PULP cores instantiated per tile; must match the `pulp_cores` value used at SDK build time
+- **`nb_pulp_cores`** (in the target string) — number of PULP cores instantiated per tile; must match the `pulp_cores` value used at SDK build time **and** the target string used when building the platform
 
 ---
 
@@ -144,17 +159,14 @@ If **Spatz** is enabled, provide the Spatz boot ROM:
 
 ```bash
 ./install/bin/gvrun \
-  --target magia_v3 \
+  --target=magia_v3:n_tiles_x=4,n_tiles_y=4,nb_pulp_cores=8 \
   --work-dir /home/gvsoc/Documents/test \
   --param binary=/home/gvsoc/Documents/chips-magia-sdk/build/bin/<spatz_test> \
   run \
-  --attr magia_v3/n_tiles_x=4 \
-  --attr magia_v3/n_tiles_y=4 \
-  --attr magia_v3/nb_pulp_cores=8 \
   --attr magia_v3/spatz_romfile=/home/gvsoc/Documents/toolchain/spatz/bootrom/spatz_init.bin
 ```
 
-- **`--attr magia_v3/spatz_romfile`** — path to the Snitch-Spatz boot ROM binary
+- **`--attr magia_v3/spatz_romfile`** — path to the Snitch-Spatz boot ROM binary. Unlike the mesh knobs, this stays a run-time `--attr`: it is a stim-file path overlaid at run time and never baked into the compiled tree
 
 ---
 
@@ -164,14 +176,11 @@ Add `--trace-level=trace` and optionally filter by component:
 
 ```bash
 ./install/bin/gvrun \
-  --target magia_v3 \
+  --target=magia_v3:n_tiles_x=1,n_tiles_y=1,nb_pulp_cores=8 \
   --work-dir /home/gvsoc/Documents/test \
   --param binary=/home/gvsoc/Documents/chips-magia-sdk/build/bin/hello_pulp \
   --trace-level=trace \
   run \
-  --attr magia_v3/n_tiles_x=1 \
-  --attr magia_v3/n_tiles_y=1 \
-  --attr magia_v3/nb_pulp_cores=8 \
   --trace=tile-0-cluster-regs
 ```
 
@@ -215,12 +224,9 @@ make build TARGETS=magia_v3
 
 ```bash
 ./install/bin/gvrun \
-  --target magia_v3 \
+  --target=magia_v3:n_tiles_x=4,n_tiles_y=4,nb_pulp_cores=8 \
   --work-dir /home/gvsoc/Documents/test \
-  run \
-  --attr magia_v3/n_tiles_x=4 \
-  --attr magia_v3/n_tiles_y=4 \
-  --attr magia_v3/nb_pulp_cores=8
+  run
 ```
 
 GVSoC will start and **block** waiting for QEMU to connect on `/tmp/gvsoc.sock`.
@@ -484,7 +490,7 @@ The PULP binary is **embedded inside the CV32 ELF** rather than being loaded fro
 
 ### Configuration Property
 
-- **`nb_pulp_cores`** — number of PULP cores (`CV32PulpCore` instances) and `pulp_start_irq_i` ports to allocate; must match the `nb_pulp_cores` attribute at simulation runtime and the `pulp_cores` value at SDK build time
+- **`nb_pulp_cores`** — number of PULP cores (`CV32PulpCore` instances) and `pulp_start_irq_i` ports to allocate; set via the `nb_pulp_cores` **target parameter** (same string at platform build and at run) and it must match the `pulp_cores` value at SDK build time
 
 ---
 
@@ -524,13 +530,18 @@ Exact addresses are defined in `arch.py`.
 
 ### Architecture Parameters (`arch.py`)
 
-- **`N_TILES_X`** (default `4`) — tile grid width
-- **`N_TILES_Y`** (default `4`) — tile grid height
+- **`N_TILES_X`** (default `4`) — tile grid width; **default** for the `n_tiles_x` target parameter
+- **`N_TILES_Y`** (default `4`) — tile grid height; **default** for the `n_tiles_y` target parameter
+- **`NB_PULP_CORES`** (default `8`) — PULP cores per cluster; **default** for the `nb_pulp_cores` target parameter
 - **`TILE_CLK_FREQ`** (default `200 MHz`) — tile clock frequency
 - **`SPATZ_ENABLE`** (default `True`) — enable Snitch+Spatz vector core per tile
 - **`PULP_ENABLE`** (default `True`) — enable PULP multi-core cluster per tile
-- **`NB_PULP_CORES`** (default `8`) — number of PULP cores per cluster
 - **`ENABLE_PCIE_VFIO`** (default `False`) — enable PCIe VFIO bridge for QEMU co-simulation
+
+> `N_TILES_X`/`N_TILES_Y`/`NB_PULP_CORES` are only the **build-time defaults**.
+> To run a different shape, override them in the target string at both build and
+> run — e.g. `--target=magia_v3:n_tiles_x=2,n_tiles_y=2,nb_pulp_cores=4` — not
+> with `--attr` (see the Build section for why).
 
 Memory sizes, latencies, and DSE parameters are defined in `MagiaArch` and `MagiaDSE`.
 
