@@ -226,6 +226,12 @@ protected:
   Soc_event_unit *soc_event_unit;
 
   int nb_core;
+  // Bit position in the event buffer of SW event 0. The event_unit_flex mapping
+  // places the NB_SW_EVT software events at buffer bits [11:4] (see e.g. MAGIA's
+  // cluster_event_map.sv, gen_cluster_map), i.e. base 4, while the legacy model
+  // assumed base 0. Configurable through properties/events/sw_base and defaulting
+  // to 0 so that targets not declaring it keep the previous behaviour.
+  int sw_event_base;
 
 
   vp::IoReqStatus sw_events_req(vp::IoReq *req, uint64_t offset, bool is_write, uint32_t *data);
@@ -295,6 +301,7 @@ Event_unit::Event_unit(vp::ComponentConf &config)
 : vp::Component(config)
 {
   nb_core = get_js_config()->get_child_int("nb_core");
+  sw_event_base = get_js_config()->get_child_int("**/properties/events/sw_base");
 
   traces.new_trace("trace", &trace, vp::DEBUG);
 
@@ -383,8 +390,9 @@ vp::IoReqStatus Event_unit::sw_events_req(vp::IoReq *req, uint64_t offset, bool 
     if (!is_write) return vp::IO_REQ_INVALID;
 
     int event = (offset - EU_CORE_TRIGG_SW_EVENT) >> 2;
-    trace.msg("SW event trigger (event: %d, coreMask: 0x%x)\n", event, *data);
-    trigger_event(1<<event, *data);
+    trace.msg("SW event trigger (event: %d, bit: %d, coreMask: 0x%x)\n", event,
+      sw_event_base + event, *data);
+    trigger_event(1<<(sw_event_base + event), *data);
   }
   else if (offset >= EU_CORE_TRIGG_SW_EVENT_WAIT && offset <  EU_CORE_TRIGG_SW_EVENT_WAIT_SIZE)
   {
