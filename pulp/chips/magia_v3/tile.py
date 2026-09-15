@@ -37,7 +37,7 @@ from pulp.chips.magia_v3.arch import *
 from pulp.chips.magia_v3.ctrl_core.core import CV32CtrlCore
 from pulp.chips.magia_v3.pulp_core.core import CV32PulpCore
 from pulp.light_redmule.light_redmule import LightRedmule
-from pulp.idma.snitch_dma import SnitchDma
+from pulp.idma.reg32_3d_dma import Reg32_3dDma
 from pulp.chips.magia_v3.fractal_sync_mm_ctrl.fractal_sync_mm_ctrl import FSync_mm_ctrl
 from pulp.chips.magia_v3.idma_mm_ctrl.idma_mm_ctrl import iDMA_mm_ctrl
 from pulp.chips.magia_v3.cluster_regs.cluster_regs import ClusterRegs
@@ -232,8 +232,13 @@ class MagiaV3Tile(gvsoc.systree.Component):
         idma_mm_ctrl= iDMA_mm_ctrl(self,f'tile-{tid}-idma-ctrl-mm')
 
         # IDMA
-        idma0 = SnitchDma(self,f'tile-{tid}-idma0',loc_base=(tid*MagiaArch.L1_TILE_OFFSET),loc_size=MagiaArch.L1_SIZE,tcdm_width=32,transfer_queue_size=1,burst_queue_size=MagiaDSE.TILE_IDMA0_BQUEUE_SIZE,burst_size=MagiaDSE.TILE_IDMA0_B_SIZE)
-        idma1 = SnitchDma(self,f'tile-{tid}-idma1',loc_base=(tid*MagiaArch.L1_TILE_OFFSET),loc_size=MagiaArch.L1_SIZE,tcdm_width=32,transfer_queue_size=1,burst_queue_size=MagiaDSE.TILE_IDMA1_BQUEUE_SIZE,burst_size=MagiaDSE.TILE_IDMA1_B_SIZE)
+        # One channel per direction, each with its own reg32_3d register file, as
+        # idma_axi_obi_transfer_ch is instantiated twice in the RTL. A single register file port
+        # and a single stream per channel, and the sixteen entries per multireg that iDMA v0.6.4
+        # generates. The direction needs no parameter: the backend picks TCDM or AXI from the
+        # address, so a channel simply never sees the other direction.
+        idma0 = Reg32_3dDma(self,f'tile-{tid}-idma0',nb_cores=1,nb_pe_ports=0,nb_streams=1,multireg_count=16,loc_base=(tid*MagiaArch.L1_TILE_OFFSET),loc_size=MagiaArch.L1_SIZE,tcdm_width=32,transfer_queue_size=1,burst_queue_size=MagiaDSE.TILE_IDMA0_BQUEUE_SIZE,burst_size=MagiaDSE.TILE_IDMA0_B_SIZE)
+        idma1 = Reg32_3dDma(self,f'tile-{tid}-idma1',nb_cores=1,nb_pe_ports=0,nb_streams=1,multireg_count=16,loc_base=(tid*MagiaArch.L1_TILE_OFFSET),loc_size=MagiaArch.L1_SIZE,tcdm_width=32,transfer_queue_size=1,burst_queue_size=MagiaDSE.TILE_IDMA1_BQUEUE_SIZE,burst_size=MagiaDSE.TILE_IDMA1_B_SIZE)
         # Redmule
         redmule = LightRedmule(self, f'tile-{tid}-redmule',
                                     tcdm_bank_width     = MagiaArch.BYTES_PER_WORD,
@@ -401,14 +406,14 @@ class MagiaV3Tile(gvsoc.systree.Component):
         # Bind: idma0
         idma0.o_AXI(self.__i_WIDE_OUTPUT())
         idma0.o_TCDM(l1_tcdm.i_DMA_INPUT())
-        idma_mm_ctrl.o_OFFLOAD_iDMA0_AXI2OBI(idma0.i_OFFLOAD())
-        idma0.o_OFFLOAD_GRANT(idma_mm_ctrl.i_OFFLOAD_GRANT_iDMA0_AXI2OBI())
+        idma_mm_ctrl.o_CFG(0, idma0.i_CTRL(0))
+        idma0.o_EVENT(0, idma_mm_ctrl.i_DONE(0))
 
         # Bind: idma1
         idma1.o_AXI(self.__i_WIDE_OUTPUT())
         idma1.o_TCDM(l1_tcdm.i_DMA_INPUT())
-        idma_mm_ctrl.o_OFFLOAD_iDMA1_OBI2AXI(idma1.i_OFFLOAD())
-        idma1.o_OFFLOAD_GRANT(idma_mm_ctrl.i_OFFLOAD_GRANT_iDMA1_OBI2AXI())
+        idma_mm_ctrl.o_CFG(1, idma1.i_CTRL(0))
+        idma1.o_EVENT(0, idma_mm_ctrl.i_DONE(1))
 
         # Bind: redmule
         redmule.o_TCDM(l1_tcdm.i_REDMULE_INPUT())
