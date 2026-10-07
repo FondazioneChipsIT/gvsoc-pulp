@@ -346,7 +346,7 @@ void ClusterDmaTester::step()
             Transfer &t = this->transfers[this->index];
             uint64_t base = this->regs_addr;
             uint32_t conf = (t.nd << 10) | (t.src_prot << 12) | (t.dst_prot << 15)
-                | (t.decouple_rw ? 1 : 0) | (t.decouple_aw ? 2 : 0);
+                | (t.decouple_aw ? 1 : 0) | (t.decouple_rw ? 2 : 0);
             bool done = true;
 
             switch (this->sub_step)

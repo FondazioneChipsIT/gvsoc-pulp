@@ -50,7 +50,7 @@ class RegDmaV3(gvsoc.systree.Component):
     ======  ==============  ==============================================
     0x000   CONF            bits 11:10 enable_nd (0 1D, 1 2D, 2 3D), 14:12
                             source protocol, 17:15 destination protocol
-                            (AXI 0), bit 0 decouple_rw, bit 1 decouple_aw
+                            (AXI 0), bit 0 decouple_aw, bit 1 decouple_rw
     0x004   STATUS          bits 7:0 back-end busy, bit 8 mid-end busy
     0x008   NEXT_ID         read: launch, returns the id
     0x00C   DONE_ID         completion counter

@@ -49,7 +49,8 @@ class ClusterDmaV3(gvsoc.systree.Component):
     ======  ==============  ==============================================
     0x000   CONF            bits 11:10 enable_nd (0 1D, 1 2D, 2 3D), 14:12
                             source protocol, 17:15 destination protocol
-                            (AXI 0, OBI 1), bit 0 decouple_rw
+                            (AXI 0, OBI 1), bit 0 decouple_aw, bit 1
+                            decouple_rw
     0x004   STATUS_0        busy bits of stream 0
     0x008   STATUS_1        busy bits of stream 1
     0x00C   NEXT_ID_0       read: launch on stream 0, returns the id

@@ -38,7 +38,7 @@ class IdmaBackend;
  *
  *   0x000              CONF: bits 11:10 enable_nd (0 1D, 1 2D, 2 3D), 14:12
  *                      source protocol, 17:15 destination protocol, bit 0
- *                      decouple_rw, bit 1 decouple_aw
+ *                      decouple_aw, bit 1 decouple_rw
  *   0x004 + 4 s        STATUS_s: bits 7:0 back-end busy, bit 8 mid-end busy
  *   0x004 + 4 (M + s)  NEXT_ID_s: a read launches the transfer on stream s
  *                      and returns its id

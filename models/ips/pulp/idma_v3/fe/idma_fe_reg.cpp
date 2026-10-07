@@ -35,8 +35,8 @@
 #define REG_SRC_STRIDE_3    0x108
 #define REG_REPS_3          0x110
 
-#define CONF_DECOUPLE_RW_BIT 0
-#define CONF_DECOUPLE_AW_BIT 1
+#define CONF_DECOUPLE_AW_BIT 0
+#define CONF_DECOUPLE_RW_BIT 1
 #define CONF_ENABLE_ND_BIT   10
 #define CONF_SRC_PROT_BIT    12
 #define CONF_DST_PROT_BIT    15
