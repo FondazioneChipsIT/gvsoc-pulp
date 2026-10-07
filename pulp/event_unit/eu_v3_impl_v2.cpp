@@ -38,6 +38,9 @@
 //     Core_event_unit::pending_req_port when a core is parked, so the deferred
 //     wake-up reply (check_pending_req()) goes back on the right port.
 //
+// The clock_<n>, irq_req_<n> and irq_line_<n> wires are optional: a platform
+// binds the ones its cores have.
+//
 // For a core with RISC-V interrupt lines (CV32E40P), the request can also be
 // driven as a level on irq_line_<n>, to bind on its external interrupt line.
 // Such a core acknowledges with the identifier of its own line, not with the
@@ -780,7 +783,7 @@ vp::IoReqStatus Core_event_unit::put_to_sleep(vp::IoReq *req, Event_unit_core_st
 {
   state = wait_state;
   this->is_active.set(0);
-  this->clock_itf.sync(0);
+  if (this->clock_itf.is_bound()) this->clock_itf.sync(0);
   pending_req = req;
   // Only the request currently being served knows its port; a re-enqueue on
   // behalf of another core keeps the port that request originally arrived on.
@@ -977,7 +980,7 @@ void Core_event_unit::reset()
   sync_irq = -1;
   pending_elw = false;
   state = CORE_STATE_NONE;
-  this->clock_itf.sync(1);
+  if (this->clock_itf.is_bound()) this->clock_itf.sync(1);
 }
 
 void Core_event_unit::wakeup_handler(vp::Block *__this, vp::ClockEvent *event)
@@ -985,7 +988,7 @@ void Core_event_unit::wakeup_handler(vp::Block *__this, vp::ClockEvent *event)
   Core_event_unit *_this = (Core_event_unit *)__this;
   _this->top->trace.msg("Replying to core after wakeup (core: %d)\n", _this->core_id);
   _this->is_active.set(1);
-  _this->clock_itf.sync(1);
+  if (_this->clock_itf.is_bound()) _this->clock_itf.sync(1);
   _this->check_pending_req();
   _this->check_state();
 }
@@ -995,7 +998,7 @@ void Core_event_unit::irq_wakeup_handler(vp::Block *__this, vp::ClockEvent *even
   Core_event_unit *_this = (Core_event_unit *)__this;
   _this->top->trace.msg("IRQ wakeup\n");
   _this->is_active.set(1);
-  _this->clock_itf.sync(1);
+  if (_this->clock_itf.is_bound()) _this->clock_itf.sync(1);
   _this->check_state();
 }
 
@@ -1014,7 +1017,7 @@ void Core_event_unit::check_state()
     if (irq != sync_irq) {
       top->trace.msg("Updating irq req (core: %d, irq: %d)\n", core_id, irq);
       sync_irq = irq;
-      irq_req_itf.sync(irq);
+      if (irq_req_itf.is_bound()) irq_req_itf.sync(irq);
       if (irq_line_itf.is_bound()) irq_line_itf.sync(irq != -1);
     }
   }
