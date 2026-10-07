@@ -43,7 +43,7 @@ target name, `key=value` separated by commas:
 make build TARGETS="magia_v3:n_tiles_x=2,n_tiles_y=2,nb_pulp_cores=8"
 ```
 
-Defaults (`4×4`, `nb_pulp_cores=8`) are used if omitted, i.e. `TARGETS=magia_v3`.
+Defaults (`1×1`, `nb_pulp_cores=8`) are used if omitted, i.e. `TARGETS=magia_v3`.
 Several meshes can be built side by side (`;`-separated):
 
 ```bash
