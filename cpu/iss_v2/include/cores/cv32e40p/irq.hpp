@@ -118,6 +118,10 @@ public:
     vp::WireSlave<bool> haltreq_itf;
     uint32_t mtvec_addr = 0;
     vp::WireSlave<uint32_t> mtvec_addr_itf;
+    /* RTL irq_ack_o / irq_id_o: pulsed with the identifier of each interrupt
+     * taken, for an interrupt controller such as the PULP event unit, which
+     * clears its request on it. */
+    vp::WireMaster<int> irq_ack_itf;
 
 private:
     void mtvec_init();

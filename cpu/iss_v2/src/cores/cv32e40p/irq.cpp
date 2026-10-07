@@ -36,6 +36,7 @@ Cv32e40pIrq::Cv32e40pIrq(Iss &iss) : IrqRiscv(iss)
     this->iss.new_slave_port("haltreq", &this->haltreq_itf, (vp::Block *)this);
     this->mtvec_addr_itf.set_sync_meth(&Cv32e40pIrq::mtvec_addr_sync);
     this->iss.new_slave_port("mtvec_addr", &this->mtvec_addr_itf, (vp::Block *)this);
+    this->iss.new_master_port("irq_ack", &this->irq_ack_itf);
 
     // Take over the lines registered by IrqRiscv, to see them while the core
     // sleeps on a cv.elw.
@@ -417,6 +418,11 @@ void Cv32e40pIrq::irq_take(iss_reg_t pending)
 
     this->trace.msg(vp::Trace::LEVEL_TRACE, "Handling IRQ (irq: %d, entry: 0x%lx)\n",
                     irq, entry);
+
+    if (this->irq_ack_itf.is_bound())
+    {
+        this->irq_ack_itf.sync(irq);
+    }
 
     Cv32e40pCosimModel *cosim = this->iss.exec.cosim;
     cosim->boundary_begin(CV32E40P_COSIM_BOUNDARY_IRQ_TAKE, 0x80000000u | irq, irq,
