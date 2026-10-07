@@ -84,7 +84,8 @@ class Cv32e40pExec(ExecInOrder):
 
 
 class Cv32e40pLsu(LsuV2):
-    """io_v2 LSU reporting the accesses to the co-simulation model."""
+    """io_v2 LSU reporting the accesses to the co-simulation model. It also
+    implements the cv.elw sleep of COREV_CLUSTER."""
 
     def __init__(self):
         super().__init__(nb_outstanding=1, class_name='Cv32e40pLsu')
@@ -94,6 +95,7 @@ class Cv32e40pLsu(LsuV2):
         super().gen(iss)
         iss.isa.add_include('<cpu/iss_v2/include/cores/cv32e40p/lsu.hpp>')
         iss.isa.add_implem_include('<cpu/iss_v2/include/cores/cv32e40p/lsu_implem.hpp>')
+        iss.add_sources(['cpu/iss_v2/src/cores/cv32e40p/lsu.cpp'])
 
 
 class Cv32e40pIrq(IssModule):

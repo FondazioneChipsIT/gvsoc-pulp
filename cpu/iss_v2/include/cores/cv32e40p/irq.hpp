@@ -66,6 +66,12 @@ public:
 
     // The haltreq wire arms req_debug and wakes a hart sleeping in WFI.
     static void haltreq_sync(vp::Block *__this, bool value);
+    /* The interrupt lines, as IrqRiscv drives them, plus the wake-up of a
+     * core sleeping on a cv.elw (ELW_EXE leaves on an interrupt request). */
+    static void msi_sync(vp::Block *__this, bool value);
+    static void mti_sync(vp::Block *__this, bool value);
+    static void mei_sync(vp::Block *__this, bool value);
+    static void external_irq_sync(vp::Block *__this, bool value, int id);
     /* The mtvec_addr wire (RTL mtvec_addr_i) gives the mtvec base at boot,
      * which the generic reset would take from the boot address. */
     static void mtvec_addr_sync(vp::Block *__this, uint32_t value);
@@ -135,4 +141,6 @@ private:
 
     // Wakes the hart from WFI, as IrqRiscv::check_interrupts() does.
     void release_wfi();
+    // Wakes a core sleeping on a cv.elw if a line would now be taken.
+    void elw_irq_check();
 };
