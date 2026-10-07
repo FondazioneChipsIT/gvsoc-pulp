@@ -63,6 +63,10 @@ class MagiaArch:
     STDOUT_ADDR_START       = 0xFFFF_0004
     STDOUT_SIZE             = 0x100
 
+    # Boot address of the tile (magia.sv boot_addr_i, the start of the code in
+    # L2 for the SDK), which is also the reset value of mtvec (mtvec_addr_i)
+    BOOT_ADDR               = 0xCC00_0000
+
     # From magia_pkg.sv
     N_MEM_BANKS         = 32        # Number of TCDM banks
     N_WORDS_BANK        = 8192      # Number of words per TCDM bank
