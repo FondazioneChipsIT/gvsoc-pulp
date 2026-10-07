@@ -17,6 +17,7 @@
 # Authors: Lorenzo Zuolo, Chips-IT (lorenzo.zuolo@chips.it)
 
 import gvsoc.systree
+from gvsoc.signature import IoV2Sync
 
 class ClusterRegs(gvsoc.systree.Component):
 
@@ -34,7 +35,7 @@ class ClusterRegs(gvsoc.systree.Component):
         self.add_sources(['pulp/chips/magia_v3/cluster_regs/cluster_regs.cpp'])
 
     def i_INPUT(self) -> gvsoc.systree.SlaveItf:
-        return gvsoc.systree.SlaveItf(self, 'input', signature='io')
+        return gvsoc.systree.SlaveItf(self, 'input', signature=IoV2Sync())
 
     def o_SPATZ_CLK_EN(self, itf: gvsoc.systree.SlaveItf):
         self.itf_bind('spatz_clock_en', itf, signature='wire<bool>')

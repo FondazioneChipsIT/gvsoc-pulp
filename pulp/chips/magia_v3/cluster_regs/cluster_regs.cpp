@@ -19,7 +19,7 @@
  */
 
 #include <vp/vp.hpp>
-#include <vp/itf/io.hpp>
+#include <vp/itf/io_v2.hpp>
 #include <vp/itf/wire.hpp>
 #include <stdio.h>
 #include <cstring>
@@ -42,7 +42,7 @@ public:
 
 protected:
     static vp::IoReqStatus req(vp::Block *__this, vp::IoReq *req);
-    vp::IoSlave         input_itf;
+    vp::IoSlave         input_itf{&ClusterRegs::req};
 
     /* Spatz registers — offsets [0x00, 0x18] */
     vp::reg_32 spatz_clock_en_reg;
@@ -105,7 +105,6 @@ ClusterRegs::ClusterRegs(vp::ComponentConf &config)
 {
     this->traces.new_trace("trace", &this->trace, vp::DEBUG);
 
-    this->input_itf.set_req_meth(&ClusterRegs::req);
     this->new_slave_port("input", &this->input_itf);
 
     this->spatz_clock_en_reg.set(0x00000000);
@@ -418,5 +417,5 @@ vp::IoReqStatus ClusterRegs::req(vp::Block *__this, vp::IoReq *req)
         }
     }
 
-    return vp::IO_REQ_OK;
+    return vp::IO_REQ_DONE;
 }
