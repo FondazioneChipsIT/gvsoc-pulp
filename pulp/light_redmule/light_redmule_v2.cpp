@@ -124,7 +124,8 @@ enum iter_instruction {
     // the row is padding the RTL gates to zero
     INSTR_LOAD_W_PAD,
     // Y load / Z store of a row past M in the last M tile: the RTL always moves
-    // Width (ce_height) rows. Timing only (see get_y_z_pad_rows())
+    // Width (ce_height) rows (see get_y_z_pad_rows()). The Y load is timing
+    // only, the Z store writes zeroes, as the RTL
     INSTR_LOAD_Y_PAD,
     INSTR_STOR_Z_PAD,
     INSTR_LOAD_X,
@@ -679,14 +680,14 @@ uint32_t LightRedmule::next_addr(){
         this->iter_instruction  = INSTR_STOR_Z;
     } else if (this->z_pad_block > 0)
     {
-        // Rows past M. The RTL stores them too, with zeroes, overwriting the
-        // memory right after Z; here they are timing only and issued as reads
-        // so that nothing is written.
+        // Rows past M. The RTL stores them too, with zeroes and all the byte
+        // enables set, overwriting the memory right after Z: done the same
+        // here, so that software sees on the model what the hardware does.
         addr = this->iter_z_addr;
         this->iter_z_addr = this->inc_addr(addr, this->k_size, buffer_w);
         this->z_pad_block -= 1;
         this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][Address] Z padding tile at 0x%11x | #Z padding tile left %d\n", addr, this->z_pad_block);
-        this->tcdm_req->set_is_write(0);
+        this->tcdm_req->set_is_write(1);
         this->tcdm_req->set_size(this->z_store_width * this->elem_size);
         this->iter_instruction  = INSTR_STOR_Z_PAD;
     } else {
@@ -1791,6 +1792,11 @@ bool LightRedmule::issue_request(uint32_t addr, uint32_t instr, bool is_write, u
         }
         if (this->z_acc_block == 0) this->iter_z_row_ptr = 0;
         else                        this->iter_z_row_ptr += buffer_w_byte;
+    }
+    else if (instr == INSTR_STOR_Z_PAD)
+    {
+        // Padding row: the RTL stores zeroes
+        std::memset(slot.buf, 0, size);
     }
 
     // prepare() resets the per-send fields (latency, duration, status) and
