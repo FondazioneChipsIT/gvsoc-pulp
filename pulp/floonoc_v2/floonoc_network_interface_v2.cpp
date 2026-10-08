@@ -41,6 +41,7 @@ void NetworkQueueV2::reset(bool active)
             this->queue.pop();
         }
         this->stalled = false;
+        this->last_inject_cycle = -1;
     }
 }
 
@@ -79,6 +80,22 @@ void NetworkQueueV2::handle_req(vp::IoReq *req, bool wide)
     if (req->get_is_write())
     {
         this->enqueue_router_req(req, false, wide, true);
+    }
+
+    if (!this->ni.cfg.cut_ax)
+    {
+        // No register on the request channels (RTL chimney CutAx = 0): the
+        // first flit enters the router in the cycle the burst arrives.
+        this->inject_now();
+    }
+}
+
+void NetworkQueueV2::inject_now()
+{
+    if (!this->stalled && this->queue.size() > 0 &&
+        this->last_inject_cycle != this->ni.clock.get_cycles())
+    {
+        this->send_router_req();
     }
 }
 
@@ -286,6 +303,8 @@ void NetworkQueueV2::send_router_req()
             this->ni.fsm_event.enqueue();
         }
     }
+
+    this->last_inject_cycle = this->ni.clock.get_cycles();
 
     this->trace.msg(vp::Trace::LEVEL_DEBUG, "Injecting flit (req: %p, base: 0x%x, size: 0x%x, is_write: %d, op: %d, is_rsp: %d)\n",
                     req, req->get_addr(), req->get_size(), req->get_is_write(), req->get_opcode(), req->is_rsp);

@@ -42,6 +42,10 @@ public:
     void handle_req(vp::IoReq *req, bool wide);
     void handle_rsp(FloonocReqV2 *req, bool is_address);
 
+    // Injects the head of the queue now if this queue has not injected a flit
+    // in this cycle yet (cut_ax = false: no register on the request channels).
+    void inject_now();
+
 private:
     void enqueue_router_req(vp::IoReq *req, bool is_address, bool wide, bool is_req);
     void enqueue_router_rsp(FloonocReqV2 *req, bool is_address);
@@ -49,6 +53,8 @@ private:
     void unstall();
 
     NetworkInterfaceV2 &ni;
+    // Cycle of the last flit injected, so that at most one is injected per cycle.
+    int64_t last_inject_cycle = -1;
     uint64_t width;
     // Network this queue injects into (NetworkInterfaceV2::NW_*), i.e. which
     // of the NI's link output ports it drives.
