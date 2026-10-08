@@ -18,6 +18,7 @@
 
 import gvsoc.systree
 from cache.cache_v4 import Cache, CacheConfig
+from pulp.snitch.snitch_icache import SnitchIcache, SnitchIcacheConfig
 from interco.router_v2 import Router, RouterConfig, KIND_UNTIMED
 from gvsoc.signature import IoV2SingleReq
 from utils.common_cells import And
@@ -39,8 +40,16 @@ class MagiaIcache(gvsoc.systree.Component):
     i.e. the cycles the RTL (snitch_icache) takes to send the refill to the L1,
     look the line up there and write it into the L0.
 
-    The RTL L0 is fully associative (give ``l0_ways`` = number of L0 lines) with
-    a round-robin replacement; cache_v4 only replaces pseudo-randomly.
+    The RTL L0 is fully associative (give ``l0_ways`` = number of L0 lines)
+    and replaces its lines in turn (snitch_icache_l0.sv), hence a
+    SnitchIcache with round_robin; cache_v4, used for the L1, only replaces
+    pseudo-randomly.
+
+    The L0 answers asynchronously when an access has a latency
+    (async_latency): the iss_v2 prefetcher ignores the latency of an inline
+    fetch answer (it only goes to its statistics,
+    core/models/cpu/iss_v2/src/prefetch/prefetch_single_line.cpp), so an L0
+    miss refilled from the L1 would cost the core nothing.
     """
 
     def __init__(self, parent: gvsoc.systree.Component, name: str, nb_cores: int,
@@ -52,9 +61,10 @@ class MagiaIcache(gvsoc.systree.Component):
 
         l0_caches = []
         for i in range(0, nb_cores):
-            l0_caches.append(Cache(self, f'l0_{i}', config=CacheConfig(
+            l0_caches.append(SnitchIcache(self, f'l0_{i}', config=SnitchIcacheConfig(
                 size=l0_size, line_size=l0_line_size, ways=l0_ways,
-                refill_latency=l0_refill_latency)))
+                refill_latency=l0_refill_latency, round_robin=True,
+                async_latency=True)))
 
         l1_cache = Cache(self, 'l1', config=CacheConfig(
             size=l1_size, line_size=l1_line_size, ways=l1_ways,
