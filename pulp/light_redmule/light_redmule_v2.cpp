@@ -97,6 +97,11 @@ enum redmule_state {
     ACKNOWLEDGE
 };
 
+// Cycles from the job trigger to the first stream request, as in the RTL:
+// trigger -> start_cfg (1) -> tiler sequential multipliers -> tiler valid (3)
+// -> scheduler IDLE->PRELOAD (2) -> streamer address generators (2).
+static constexpr int JOB_START_LATENCY = 8;
+
 enum iter_instruction {
     INSTR_LOAD_Y,
     INSTR_LOAD_W,
@@ -104,6 +109,10 @@ enum iter_instruction {
     // Load of a W row the RTL reads beyond N (see get_w_rows()): timing only,
     // the row is padding the RTL gates to zero
     INSTR_LOAD_W_PAD,
+    // Y load / Z store of a row past M in the last M tile: the RTL always moves
+    // Width (ce_height) rows. Timing only (see get_y_z_pad_rows())
+    INSTR_LOAD_Y_PAD,
+    INSTR_STOR_Z_PAD,
     INSTR_LOAD_X,
     INSTR_STOR_Z,
     INSTR_FORWARD_YZ
@@ -153,6 +162,7 @@ public:
     uint32_t next_iteration();
     uint32_t get_redmule_array_runtime();
     uint32_t get_w_rows(uint32_t iter_k);
+    uint32_t get_y_z_pad_rows(uint32_t rows);
     uint32_t get_routine_access_block_number();
     uint32_t get_preload_access_block_number();
     uint32_t get_storing_access_block_number();
@@ -273,6 +283,8 @@ public:
     uint32_t            x_acc_block;
     uint32_t            w_acc_block;
     uint32_t            w_pad_block;      // W rows loaded for timing only (get_w_rows())
+    uint32_t            y_pad_block;      // Y rows loaded for timing only (get_y_z_pad_rows())
+    uint32_t            z_pad_block;      // Z rows stored for timing only (get_y_z_pad_rows())
     uint32_t            y_acc_block;
     uint32_t            z_acc_block;
     uint32_t            z_store_width;
@@ -392,6 +404,8 @@ LightRedmule::LightRedmule(vp::ComponentConf &config)
     this->x_acc_block       = 0;
     this->w_acc_block       = 0;
     this->w_pad_block       = 0;
+    this->y_pad_block       = 0;
+    this->z_pad_block       = 0;
     this->y_acc_block       = 0;
     this->z_acc_block       = 0;
     this->z_store_width     = 0;
@@ -504,6 +518,8 @@ void LightRedmule::init_redmule_meta_data(){
     this->x_acc_block = 0;
     this->w_acc_block = 0;
     this->w_pad_block = 0;
+    this->y_pad_block = 0;
+    this->z_pad_block = 0;
     this->y_acc_block = 0;
     this->z_acc_block = 0;
 
@@ -586,6 +602,16 @@ uint32_t LightRedmule::next_addr(){
         this->tcdm_req->set_is_write(0);
         this->tcdm_req->set_size(buffer_w * this->elem_size);
         this->iter_instruction  = INSTR_LOAD_Y;
+    } else if (this->y_pad_block > 0)
+    {
+        // Rows past M, read after the real ones like the RTL does. Timing only.
+        addr = this->iter_y_addr;
+        this->iter_y_addr = this->inc_addr(addr, this->k_size, buffer_w);
+        this->y_pad_block -= 1;
+        this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][Address] Y padding tile at 0x%11x | #Y padding tile left %d\n", addr, this->y_pad_block);
+        this->tcdm_req->set_is_write(0);
+        this->tcdm_req->set_size(buffer_w * this->elem_size);
+        this->iter_instruction  = INSTR_LOAD_Y_PAD;
     } else if (this->w_pad_block > 0)
     {
         // Padding rows first, so that the last real W row still triggers the
@@ -628,6 +654,18 @@ uint32_t LightRedmule::next_addr(){
         this->tcdm_req->set_is_write(1);
         this->tcdm_req->set_size(this->z_store_width * this->elem_size);
         this->iter_instruction  = INSTR_STOR_Z;
+    } else if (this->z_pad_block > 0)
+    {
+        // Rows past M. The RTL stores them too, with zeroes, overwriting the
+        // memory right after Z; here they are timing only and issued as reads
+        // so that nothing is written.
+        addr = this->iter_z_addr;
+        this->iter_z_addr = this->inc_addr(addr, this->k_size, buffer_w);
+        this->z_pad_block -= 1;
+        this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][Address] Z padding tile at 0x%11x | #Z padding tile left %d\n", addr, this->z_pad_block);
+        this->tcdm_req->set_is_write(0);
+        this->tcdm_req->set_size(this->z_store_width * this->elem_size);
+        this->iter_instruction  = INSTR_STOR_Z_PAD;
     } else {
         this->trace.fatal("[LightRedmule][Address] INVALID redmule address iteration : No tiles to access\n");
     }
@@ -836,6 +874,8 @@ uint32_t LightRedmule::get_routine_access_block_number(){
     this->x_acc_block = 0;
     this->w_acc_block = 0;
     this->w_pad_block = 0;
+    this->y_pad_block = 0;
+    this->z_pad_block = 0;
     this->y_acc_block = 0;
     this->z_acc_block = 0;
     
@@ -892,14 +932,16 @@ uint32_t LightRedmule::get_routine_access_block_number(){
         this->iter_y_addr = this->calculate_tile_base_address(this->y_addr, this->k_size, buffer_h, buffer_w, _i, _j);
 
         this->y_acc_block = (this->m_size - _i * this->ce_height) < this->ce_height ? (this->m_size - _i * this->ce_height) : this->ce_height;
-        total_blocks += this->y_acc_block;
+        this->y_pad_block = this->get_y_z_pad_rows(this->y_acc_block);
+        total_blocks += this->y_acc_block + this->y_pad_block;
     }
 
     // Z block
     if ((this->iter_k == 0) && (is_first_iteration == 0))
     {
         this->z_acc_block = this->z_store_height;
-        total_blocks += this->z_acc_block;
+        this->z_pad_block = this->get_y_z_pad_rows(this->z_acc_block);
+        total_blocks += this->z_acc_block + this->z_pad_block;
 
         //update z tile base address
         uint32_t _i = this->iter_i;
@@ -925,13 +967,16 @@ uint32_t LightRedmule::get_preload_access_block_number(){
     this->x_acc_block = 0;
     this->w_acc_block = 0;
     this->w_pad_block = 0;
+    this->y_pad_block = 0;
+    this->z_pad_block = 0;
     this->y_acc_block = 0;
     this->z_acc_block = 0;
 
     // X & Y block
     this->x_acc_block = this->m_size < this->ce_height ?  this->m_size : this->ce_height;
     this->y_acc_block = this->m_size < this->ce_height ?  this->m_size : this->ce_height;
-    total_blocks = this->x_acc_block + this->y_acc_block;
+    this->y_pad_block = this->get_y_z_pad_rows(this->y_acc_block);
+    total_blocks = this->x_acc_block + this->y_acc_block + this->y_pad_block;
 
     return total_blocks;
 
@@ -947,12 +992,15 @@ uint32_t LightRedmule::get_storing_access_block_number(){
     this->x_acc_block = 0;
     this->w_acc_block = 0;
     this->w_pad_block = 0;
+    this->y_pad_block = 0;
+    this->z_pad_block = 0;
     this->y_acc_block = 0;
     this->z_acc_block = 0;
 
     // Z block
     this->z_acc_block = this->z_store_height;
-    total_blocks = this->z_acc_block;
+    this->z_pad_block = this->get_y_z_pad_rows(this->z_acc_block);
+    total_blocks = this->z_acc_block + this->z_pad_block;
     this->iter_z_addr = this->calculate_tile_base_address(this->z_addr, this->k_size, buffer_h, buffer_w, this->z_col_tiles - 1, this->z_row_tiles - 1);
 
     return total_blocks;
@@ -992,6 +1040,15 @@ uint32_t LightRedmule::get_w_rows(uint32_t iter_k)
     uint32_t start   = iter_k * chunk;
     if (total <= start) return 0;
     return (total - start) < chunk ? (total - start) : chunk;
+}
+
+// Rows of padding added to a Y load or Z store of `rows` real rows: the RTL
+// streams always Width (ce_height) rows per M tile (redmule_tiler.sv:
+// yz_tot_len = Width * x_rows_iter * w_cols_iter; only the X stream is cut to
+// x_rows_lftovr, in redmule_memory_scheduler.sv).
+uint32_t LightRedmule::get_y_z_pad_rows(uint32_t rows)
+{
+    return rows < this->ce_height ? this->ce_height - rows : 0;
 }
 
 uint32_t LightRedmule::op_foramt_parser(uint32_t op_format) {
@@ -1066,7 +1123,7 @@ void LightRedmule::offload_sync(vp::Block *__this, IssOffloadInsn<uint32_t> *ins
                 _this->fsm_timestamp    = 0;
                 _this->timer_start      = _this->time.get_time();
                 _this->cycle_start      = _this->clock.get_cycles();
-                _this->event_enqueue(_this->fsm_event, 1);
+                _this->event_enqueue(_this->fsm_event, JOB_START_LATENCY);
             }
             break;
         }
@@ -1160,7 +1217,7 @@ void LightRedmule::start_next_job()
     this->fsm_timestamp    = 0;
     this->timer_start      = this->time.get_time();
     this->cycle_start      = this->clock.get_cycles();
-    this->event_enqueue(this->fsm_event, 1);
+    this->event_enqueue(this->fsm_event, JOB_START_LATENCY);
 }
 
 //SOFT_CLEAR write: 0 full clear, 1 clear engine state only, 2 clear regfile+queue only
@@ -1236,7 +1293,7 @@ vp::IoReqStatus LightRedmule::req(vp::Block *__this, vp::IoReq *req)
                     _this->fsm_timestamp    = 0;
                     _this->timer_start      = _this->time.get_time();
                     _this->cycle_start      = _this->clock.get_cycles();
-                    _this->event_enqueue(_this->fsm_event, 1);
+                    _this->event_enqueue(_this->fsm_event, JOB_START_LATENCY);
 
                     //Save Query
                     //_this->redmule_query = req;
