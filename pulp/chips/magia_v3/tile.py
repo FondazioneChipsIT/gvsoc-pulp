@@ -105,7 +105,11 @@ class MagiaTileTcdm(gvsoc.systree.Component):
             nb_masters=self.NB_NARROW,
             nb_slaves=nb_banks,
             interleaving_width=int(math.log2(MagiaArch.BYTES_PER_WORD)),
-            nb_wide_masters=self.NB_WIDE))
+            nb_wide_masters=self.NB_WIDE,
+            # RedMulE (HWPE branch) and the iDMA (DMA branch) reach the banks
+            # through separate HCI branches, arbitrated bank by bank
+            # (local_interconnect.sv), not through one shared wide port
+            wide_shared_port=False))
 
         for i in range(nb_banks):
             bank = Memory(self, f'bank_{i}', config=MemoryV3Config(
