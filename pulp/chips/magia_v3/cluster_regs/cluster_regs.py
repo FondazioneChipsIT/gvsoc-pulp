@@ -55,5 +55,9 @@ class ClusterRegs(gvsoc.systree.Component):
     def o_PULP_START(self, core_id: int, itf: gvsoc.systree.SlaveItf):
         self.itf_bind(f'pulp_start_irq_{core_id}', itf, signature='wire<bool>')
 
+    def i_PULP_IRQ_ACK(self, core_id: int) -> gvsoc.systree.SlaveItf:
+        """Interrupt acknowledge of PULP core ``core_id``: clears its start IRQ."""
+        return gvsoc.systree.SlaveItf(self, f'pulp_irq_ack_{core_id}', signature='wire<int>')
+
     def o_PULP_ENTRY(self, itf: gvsoc.systree.SlaveItf):
         self.itf_bind('pulp_entry', itf, signature='wire<uint64_t>')

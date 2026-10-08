@@ -80,6 +80,10 @@ protected:
 
     vp::WireMaster<bool>              pulp_clock_en;  /* broadcast: single port, all cores via GVSoC fan-out */
     std::vector<vp::WireMaster<bool>> pulp_start_irq; /* per-core one-hot IRQ */
+    /* Per-core interrupt acknowledge: the start IRQ is a level held until the
+     * core takes it, as cluster_start_irq_pending in magia_tile.sv */
+    std::vector<vp::WireSlave<int>>   pulp_irq_ack;
+    static void pulp_irq_ack_sync(vp::Block *__this, int irq, int core);
     vp::WireMaster<bool>              pulp_done_irq;
     vp::WireMaster<uint64_t>          pulp_entry;
 
@@ -143,6 +147,12 @@ ClusterRegs::ClusterRegs(vp::ComponentConf &config)
                               &this->pulp_start_irq[i], this);
     }
 
+    this->pulp_irq_ack.resize(this->nb_pulp_cores);
+    for (int i = 0; i < this->nb_pulp_cores; i++) {
+        this->pulp_irq_ack[i].set_sync_meth_muxed(&ClusterRegs::pulp_irq_ack_sync, i);
+        this->new_slave_port("pulp_irq_ack_" + std::to_string(i), &this->pulp_irq_ack[i], this);
+    }
+
     this->new_master_port("pulp_done_irq", &this->pulp_done_irq, this);
     this->new_master_port("pulp_entry",    &this->pulp_entry,    this);
 
@@ -167,6 +177,15 @@ void ClusterRegs::pulp_fsm_handler(vp::Block *__this, vp::ClockEvent *event)
     _this->pulp_done_reg.set(0x00);
     _this->pulp_done_irq.sync(false);
     _this->trace.msg("[PULP Regs] Done IRQ deasserted\n");
+}
+
+void ClusterRegs::pulp_irq_ack_sync(vp::Block *__this, int irq, int core)
+{
+    ClusterRegs *_this = (ClusterRegs *)__this;
+    /* The start IRQ is the only interrupt source of a cluster core, so any
+     * acknowledge clears it (magia_tile.sv, cluster_start_irq_pending) */
+    if (_this->pulp_start_irq[core].is_bound()) _this->pulp_start_irq[core].sync(false);
+    _this->trace.msg("[PULP Regs] Start IRQ acknowledged by core %d\n", core);
 }
 
 void ClusterRegs::pulp_start_deassert_handler(vp::Block *__this, vp::ClockEvent *event)
@@ -385,7 +404,10 @@ vp::IoReqStatus ClusterRegs::req(vp::Block *__this, vp::IoReq *req)
                         _this->trace.msg("[PULP Regs][0x58] Start IRQ → core %d\n", i);
                     }
                 }
-                _this->event_enqueue(_this->pulp_start_deassert_event, 1);
+                /* Held until each core acknowledges it (pulp_irq_ack_sync), as
+                 * the RTL latches the dispatch pulse in
+                 * cluster_start_irq_pending: a one-cycle pulse is lost if the
+                 * core does not sample it in that very cycle */
             } else {
                 /* PULP core ACK (before task): count; when all done → clear register only */
                 _this->nb_recv_ack_reqs++;

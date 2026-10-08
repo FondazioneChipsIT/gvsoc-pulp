@@ -380,11 +380,13 @@ class MagiaV3Tile(gvsoc.systree.Component):
                 pulp_cores[pulp_id].o_FLUSH_CACHE(pulp_i_cache.i_FLUSH())
                 pulp_i_cache.o_FLUSH_ACK(pulp_cores[pulp_id].i_FLUSH_CACHE_ACK())
 
-                # PULP core complex registers. The start pulse reaches the core
-                # on its machine external interrupt line, as in the RTL.
+                # PULP core complex registers. The start interrupt reaches the
+                # core on its machine external interrupt line and stays raised
+                # until the core acknowledges it, as in the RTL.
                 cluster_regs.o_PULP_ENTRY(pulp_cores[pulp_id].i_ENTRY())
                 cluster_regs.o_PULP_CLK_EN(pulp_cores[pulp_id].i_FETCHEN())
                 cluster_regs.o_PULP_START(pulp_id, pulp_cores[pulp_id].i_IRQ(11))
+                self.bind(pulp_cores[pulp_id], 'irq_ack', cluster_regs, f'pulp_irq_ack_{pulp_id}')
 
             # Cluster icache -> tile interconnect
             pulp_i_cache.o_REFILL(self.cut('axi-slv-cut-pulp-icache', tile_xbar.i_INPUT(AXI_IN_PULP_REFILL), narrow))
