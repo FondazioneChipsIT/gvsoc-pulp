@@ -173,11 +173,13 @@ class MagiaV3Tile(gvsoc.systree.Component):
         core_cv32_straps.o_MTVEC_ADDR(gvsoc.systree.SlaveItf(core_cv32, 'mtvec_addr',
             signature='wire<uint32_t>'))
 
-        # Instruction cache of the control core: 512 B L0, 16 KiB L1
+        # Instruction cache of the control core (magia_tile_pkg i$ parameters):
+        # fully associative 32 x 16 B L0, 32 sets x 32 ways x 16 B L1
         cv32_i_cache = MagiaIcache(self, f'tile-{tid}-cv32-icache', nb_cores=1,
-            l0_size=512, l0_line_size=16, l0_ways=1,
+            l0_size=512, l0_line_size=16, l0_ways=32,
             l1_size=16384, l1_line_size=16, l1_ways=32,
-            l1_refill_latency=MagiaDSE.TILE_ICACHE_REFILL_LATENCY)
+            l1_refill_latency=MagiaDSE.TILE_ICACHE_REFILL_LATENCY,
+            l0_refill_latency=MagiaDSE.TILE_ICACHE_L0_REFILL_LATENCY_SERIAL)
 
         if MagiaArch.SPATZ_ENABLE:
 
@@ -195,10 +197,12 @@ class MagiaV3Tile(gvsoc.systree.Component):
 
             snitch_spatz = Spatz(self, f'tile-{tid}-snitch-spatz', config=config)
 
-            # Instruction cache of Spatz: 32 B L0, 8 KiB L1
+            # Instruction cache of Spatz (i_spatz_cc_icache): fully associative
+            # 8 x 32 B L0, 32 sets x 2 ways x 32 B L1, parallel lookup
             snitch_spatz_i_cache = MagiaIcache(self, f'tile-{tid}-snitch-spatz-icache',
-                nb_cores=1, l0_size=32, l0_line_size=32, l0_ways=1,
-                l1_size=8192, l1_line_size=32, l1_ways=2, l1_refill_latency=2)
+                nb_cores=1, l0_size=256, l0_line_size=32, l0_ways=8,
+                l1_size=2048, l1_line_size=32, l1_ways=2, l1_refill_latency=2,
+                l0_refill_latency=MagiaDSE.TILE_ICACHE_L0_REFILL_LATENCY_PARALLEL)
 
         if MagiaArch.PULP_ENABLE:
             # PULP cluster cores
@@ -208,11 +212,16 @@ class MagiaV3Tile(gvsoc.systree.Component):
                 # reverse formula to get cluster id: x=pulp_id-2*tree.nb_clusters; cluster_id=x/tree.nb_pulp_cores
                 # reverse formula to get local pulp id: x mod tree.nb_pulp_cores
 
-            # Instruction cache of the cluster: one 512 B L0 per core, shared 16 KiB L1
+            # Instruction cache of the cluster (magia_tile_pkg CLUSTER_* i$
+            # parameters): per core a fully associative L0 of 32 * nb_cores x
+            # 16 B lines, shared L1 of 32 * nb_cores sets x 32 ways x 16 B
+            pulp_l0_lines = 32 * tree.nb_pulp_cores
             pulp_i_cache = MagiaIcache(self, f'tile-{tid}-pulp-icache',
-                nb_cores=tree.nb_pulp_cores, l0_size=512, l0_line_size=16, l0_ways=1,
-                l1_size=16384, l1_line_size=16, l1_ways=32,
-                l1_refill_latency=MagiaDSE.TILE_ICACHE_REFILL_LATENCY)
+                nb_cores=tree.nb_pulp_cores, l0_size=pulp_l0_lines * 16, l0_line_size=16,
+                l0_ways=pulp_l0_lines,
+                l1_size=32 * tree.nb_pulp_cores * 32 * 16, l1_line_size=16, l1_ways=32,
+                l1_refill_latency=MagiaDSE.TILE_ICACHE_REFILL_LATENCY,
+                l0_refill_latency=MagiaDSE.TILE_ICACHE_L0_REFILL_LATENCY_SERIAL)
 
         if MagiaArch.PULP_ENABLE or MagiaArch.SPATZ_ENABLE:
             # Cluster control registers

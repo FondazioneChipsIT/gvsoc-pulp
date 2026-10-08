@@ -34,18 +34,27 @@ class MagiaIcache(gvsoc.systree.Component):
 
     The flush input flushes every level, and the flush acknowledge is raised
     once all of them acknowledged.
+
+    ``l0_refill_latency`` is what an L0 miss costs on top of the L1 access,
+    i.e. the cycles the RTL (snitch_icache) takes to send the refill to the L1,
+    look the line up there and write it into the L0.
+
+    The RTL L0 is fully associative (give ``l0_ways`` = number of L0 lines) with
+    a round-robin replacement; cache_v4 only replaces pseudo-randomly.
     """
 
     def __init__(self, parent: gvsoc.systree.Component, name: str, nb_cores: int,
             l0_size: int, l0_line_size: int, l0_ways: int,
-            l1_size: int, l1_line_size: int, l1_ways: int, l1_refill_latency: int):
+            l1_size: int, l1_line_size: int, l1_ways: int, l1_refill_latency: int,
+            l0_refill_latency: int=0):
 
         super().__init__(parent, name)
 
         l0_caches = []
         for i in range(0, nb_cores):
             l0_caches.append(Cache(self, f'l0_{i}', config=CacheConfig(
-                size=l0_size, line_size=l0_line_size, ways=l0_ways, refill_latency=0)))
+                size=l0_size, line_size=l0_line_size, ways=l0_ways,
+                refill_latency=l0_refill_latency)))
 
         l1_cache = Cache(self, 'l1', config=CacheConfig(
             size=l1_size, line_size=l1_line_size, ways=l1_ways,
