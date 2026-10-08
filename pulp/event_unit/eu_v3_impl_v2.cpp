@@ -72,6 +72,7 @@ class Mutex_unit;
 //   - THe one required by the event unit to grant the access.
 //   - The one required by the core to continue after the grant is back.
 //     This one should be 2 or 3 cycles and should be moved to the core.
+// Default of the wakeup_req_latency property.
 #define EU_WAKEUP_REQ_LATENCY 6
 
 // Cycles needed by the event unit to send back the clock once
@@ -274,6 +275,8 @@ protected:
   Soc_event_unit *soc_event_unit;
 
   int nb_core;
+  // Latency added to the reply of an event wait (EU_WAKEUP_REQ_LATENCY)
+  int wakeup_req_latency;
 
 
   vp::IoReqStatus sw_events_req(vp::IoReq *req, uint64_t offset, bool is_write, uint32_t *data);
@@ -347,6 +350,9 @@ Event_unit::Event_unit(vp::ComponentConf &config)
 : vp::Component(config)
 {
   nb_core = get_js_config()->get_child_int("nb_core");
+  js::Config *wakeup_req_latency_cfg = get_js_config()->get("wakeup_req_latency");
+  wakeup_req_latency = wakeup_req_latency_cfg ? wakeup_req_latency_cfg->get_int()
+                                              : EU_WAKEUP_REQ_LATENCY;
 
   traces.new_trace("trace", &trace, vp::DEBUG);
 
@@ -800,7 +806,7 @@ vp::IoReqStatus Core_event_unit::wait_event(vp::IoReq *req, Event_unit_core_stat
   // This will be added by the core after it is waken up.
   // Also if the event is already there it takes 2 cycles just to decide that we don't
   // go to sleep.
-  req->inc_latency(EU_WAKEUP_REQ_LATENCY);
+  req->inc_latency(top->wakeup_req_latency);
 
 #if 1
   // Experimental model where the core always go to sleep even if the event is there

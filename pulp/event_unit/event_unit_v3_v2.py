@@ -43,6 +43,10 @@ class Event_unit(st.Component):
     interrupt lines such as the CV32E40P, whose acknowledge then clears the
     requested event whatever identifier it carries. ``clock_<n>`` gates the
     core while it waits.
+
+    ``config`` may set ``wakeup_req_latency``, the cycles added to the reply of
+    an event wait on top of the wake-up itself (6 when not given, the value of
+    the v1 model).
     """
 
     def __init__(self, parent, name, config):

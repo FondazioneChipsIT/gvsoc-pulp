@@ -137,6 +137,11 @@ class MagiaV3Tile(gvsoc.systree.Component):
                 "version": "4",
                 "config": {
                     "nb_core": 1,
+                    # Measured on the RTL (control core parked on cv.elw):
+                    # event -> grant 2 cycles (the wake-up latency), read
+                    # data one cycle later, plus the eu-direct cut. The
+                    # default of 6 is for the PULP cluster cores.
+                    "wakeup_req_latency": 1,
                     "properties": {
                         "dispatch": {"size": 8},
                         "mutex": {"nb_mutexes": 0},
