@@ -118,6 +118,11 @@ class Cv32e40pIrq(IssModule):
         # There is no instruction cache, so code written by a store runs
         # without fence.i (lsu_v2.cpp).
         iss.isa.add_define('CONFIG_GVSOC_ISS_COHERENT_FETCH', 1)
+        # Control-flow penalties of the RTL pipeline (CV32E40P user manual,
+        # instruction timing): a jump (jal, jalr, c.j, c.jr, ...) costs one
+        # extra cycle, a taken branch two (event_implem.hpp)
+        iss.isa.add_define('CONFIG_GVSOC_ISS_JUMP_STALL_CYCLES', 1)
+        iss.isa.add_define('CONFIG_GVSOC_ISS_TAKEN_BRANCH_STALL_CYCLES', 1)
         # FPnew detects tininess after rounding (fpnew_fma.sv).
         iss.add_c_flags(['-DFLEXFLOAT_TININESS_AFTER_ROUNDING=1'])
         iss.isa.add_include('<cpu/iss_v2/include/cores/cv32e40p/irq.hpp>')
