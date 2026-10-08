@@ -102,6 +102,20 @@ enum redmule_state {
 // -> scheduler IDLE->PRELOAD (2) -> streamer address generators (2).
 static constexpr int JOB_START_LATENCY = 8;
 
+// Rows of W the W stream loads ahead before the computation starts: the HCI
+// load FIFO of the stream (4, redmule_streamer.sv) and i_w_buffer_fifo (4,
+// redmule_top.sv), plus the row in flight (9 rows on the waveforms).
+static constexpr uint32_t W_PREFETCH_ROWS = 9;
+
+// Cycles the z_buffer takes per Y row in the preload: the Y stream feeds it
+// one row every 4 cycles (redmule_streamer.sv, load FIFO: "the consumer has a
+// throughput of 1 packet over 4 cycles"), the X and W accesses taking the
+// cycles in between. The scheduler enters LOAD_W once the z_buffer is loaded,
+// Y_ROW_CYCLES * (Width - 1) + 1 cycles after the first request of the job
+// (29 on the waveforms of test_mm_os, test_mm_os_2 and test_mm_ws, whatever
+// the number of X and W rows of the preload).
+static constexpr int64_t Y_ROW_CYCLES = 4;
+
 enum iter_instruction {
     INSTR_LOAD_Y,
     INSTR_LOAD_W,
@@ -283,6 +297,10 @@ public:
     uint32_t            x_acc_block;
     uint32_t            w_acc_block;
     uint32_t            w_pad_block;      // W rows loaded for timing only (get_w_rows())
+    uint32_t            w_rows_later;     // real W rows of the tile left to a later phase
+    uint32_t            w_prefetch_real;  // real W rows of the first tile loaded by the preload
+    uint32_t            w_prefetch_pad;   // padding W rows of the first tile loaded by the preload
+    int64_t             preload_first_issue; // cycle of the first access of the preload
     uint32_t            y_pad_block;      // Y rows loaded for timing only (get_y_z_pad_rows())
     uint32_t            z_pad_block;      // Z rows stored for timing only (get_y_z_pad_rows())
     uint32_t            y_acc_block;
@@ -404,6 +422,9 @@ LightRedmule::LightRedmule(vp::ComponentConf &config)
     this->x_acc_block       = 0;
     this->w_acc_block       = 0;
     this->w_pad_block       = 0;
+    this->w_rows_later      = 0;
+    this->w_prefetch_real   = 0;
+    this->w_prefetch_pad    = 0;
     this->y_pad_block       = 0;
     this->z_pad_block       = 0;
     this->y_acc_block       = 0;
@@ -630,7 +651,7 @@ uint32_t LightRedmule::next_addr(){
         this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][Address] W tile at 0x%11x | #W tile left %d\n", addr, this->w_acc_block);
         this->tcdm_req->set_is_write(0);
         this->tcdm_req->set_size(buffer_w * this->elem_size);
-        if (this->w_acc_block == 0)
+        if (this->w_acc_block == 0 && this->w_rows_later == 0)
         {
             this->iter_instruction  = INSTR_LOAD_W_COMPUTE;
         } else {
@@ -891,6 +912,20 @@ uint32_t LightRedmule::get_routine_access_block_number(){
     this->w_pad_block = this->get_w_rows(this->iter_k) - this->w_acc_block;
     total_blocks += this->w_pad_block;
     this->iter_w_addr = this->calculate_tile_base_address(this->w_addr, this->k_size, buffer_n, buffer_w, this->iter_k, this->iter_j);
+    this->w_rows_later = 0;
+    if (is_first_iteration)
+    {
+        // The preload already loaded the first rows of this tile
+        this->w_pad_block -= this->w_prefetch_pad;
+        this->w_acc_block -= this->w_prefetch_real;
+        total_blocks -= this->w_prefetch_pad + this->w_prefetch_real;
+        for (uint32_t i = 0; i < this->w_prefetch_real; i++)
+        {
+            this->iter_w_addr = this->inc_addr(this->iter_w_addr, this->k_size, buffer_w);
+        }
+        this->w_prefetch_pad  = 0;
+        this->w_prefetch_real = 0;
+    }
 
     // X block
     if (is_last_iteration == 0)
@@ -960,18 +995,19 @@ uint32_t LightRedmule::get_routine_access_block_number(){
 
 }
 
-// TODO: the preload is shorter than in the RTL (~20 cycles per job on MAGIA).
-// In the RTL the X, W and Y streams run concurrently on the single TCDM port
-// with fixed priority X > W > Y: X prefetches the next N chunk too, W fills its
-// FIFO (9 rows), and the computation starts only once the z_buffer has loaded
-// Y, which therefore comes last (LOAD_W ~35 cycles after the trigger, both for
-// MAGIA test_mm_ws and test_mm_os). Here the preload is sequential and only
-// loads Y and the first X chunk; W and the X prefetch overlap the first
-// iteration instead. Modeling it needs the three prioritized streams, with the
-// first W chunk and the X prefetch moved into the preload.
+// Accesses of the preload, as in the RTL, where the X, W and Y streams start
+// together and the computation waits for the z_buffer to have loaded Y: the
+// first X tile, the first W_PREFETCH_ROWS rows of the first W tile, and the Y
+// rows. They are issued one per cycle, and the computation starts once the
+// z_buffer has loaded Y (Y_ROW_CYCLES), or after the accesses if later. The rest of the first
+// W tile is loaded by the first iteration. The RTL X stream also loads the
+// second X tile before the computation, which the model leaves to the first
+// iteration as for the next tiles.
 uint32_t LightRedmule::get_preload_access_block_number(){
     uint32_t total_blocks       = 0;
     uint32_t tcdms_bw           = this->bandwidth / this->elem_size;
+    uint32_t buffer_n           = tcdms_bw;
+    uint32_t buffer_w           = this->ce_width * (this->ce_pipe + 1);
 
     this->x_acc_block = 0;
     this->w_acc_block = 0;
@@ -986,6 +1022,18 @@ uint32_t LightRedmule::get_preload_access_block_number(){
     this->y_acc_block = this->m_size < this->ce_height ?  this->m_size : this->ce_height;
     this->y_pad_block = this->get_y_z_pad_rows(this->y_acc_block);
     total_blocks = this->x_acc_block + this->y_acc_block + this->y_pad_block;
+
+    // First rows of the first W tile, padding first as in the iterations
+    uint32_t w_real = (this->x_row_tiles == 1 && this->x_row_lefts > 0) ? this->x_row_lefts : tcdms_bw;
+    uint32_t w_pad = this->get_w_rows(0) - w_real;
+    uint32_t w_rows = std::min(W_PREFETCH_ROWS, w_real + w_pad);
+    this->w_pad_block = std::min(w_rows, w_pad);
+    this->w_acc_block = w_rows - this->w_pad_block;
+    this->w_prefetch_pad = this->w_pad_block;
+    this->w_prefetch_real = this->w_acc_block;
+    this->w_rows_later = w_real - this->w_acc_block;
+    this->iter_w_addr = this->calculate_tile_base_address(this->w_addr, this->k_size, buffer_n, buffer_w, 0, 0);
+    total_blocks += w_rows;
 
     return total_blocks;
 
@@ -1812,14 +1860,25 @@ void LightRedmule::fsm_handler(vp::Block *__this, vp::ClockEvent *event)
                 {
                     _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][Preload] Send TCDM req #%d [addr=0x%08x]\n",
                         _this->fsm_counter, temp_addr);
+                    if (_this->fsm_counter == 0)
+                    {
+                        _this->preload_first_issue = _this->clock.get_cycles();
+                    }
                     _this->fsm_counter += 1;
                 }
             }
 
             bool iter_done = (_this->fsm_counter >= _this->tcdm_block_total)
                           && _this->all_slots_free();
+            int64_t latency = 1;
             if (iter_done)
             {
+                // The computation starts once Y is through the z_buffer
+                int64_t start = _this->preload_first_issue
+                    + Y_ROW_CYCLES * (_this->ce_height - 1) + 1;
+                int64_t now = _this->clock.get_cycles();
+                if (start > now + 1) latency = start - now;
+
                 _this->tcdm_block_total = _this->get_routine_access_block_number();
                 _this->fsm_counter      = 0;
                 _this->fsm_timestamp    = 0;
@@ -1840,26 +1899,30 @@ void LightRedmule::fsm_handler(vp::Block *__this, vp::ClockEvent *event)
                 _this->reg_busy.set(1);
             }
 
-            _this->event_enqueue(_this->fsm_event, 1);
+            _this->event_enqueue(_this->fsm_event, latency);
             break;
         }
         case ROUTINE: {
-            bool can_issue = (_this->fsm_counter < _this->tcdm_block_total)
-                && !_this->request_denied
-                && _this->issue_slot_gate_ok();
+            auto issue_one = [_this]() {
+                bool can_issue = (_this->fsm_counter < _this->tcdm_block_total)
+                    && !_this->request_denied
+                    && _this->issue_slot_gate_ok();
 
-            if (can_issue)
-            {
-                uint32_t temp_addr = _this->next_addr() - _this->loc_base;
-                bool is_w = _this->tcdm_req->get_is_write();
-                uint32_t sz = (uint32_t)_this->tcdm_req->get_size();
-                if (_this->issue_request(temp_addr, _this->iter_instruction, is_w, sz))
+                if (can_issue)
                 {
-                    _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][ROUTINE-ijk: %0d-%0d-%0d] Send TCDM req #%d [addr=0x%08x]\n",
-                        _this->iter_i, _this->iter_j, _this->iter_k, _this->fsm_counter, temp_addr);
-                    _this->fsm_counter += 1;
+                    uint32_t temp_addr = _this->next_addr() - _this->loc_base;
+                    bool is_w = _this->tcdm_req->get_is_write();
+                    uint32_t sz = (uint32_t)_this->tcdm_req->get_size();
+                    if (_this->issue_request(temp_addr, _this->iter_instruction, is_w, sz))
+                    {
+                        _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][ROUTINE-ijk: %0d-%0d-%0d] Send TCDM req #%d [addr=0x%08x]\n",
+                            _this->iter_i, _this->iter_j, _this->iter_k, _this->fsm_counter, temp_addr);
+                        _this->fsm_counter += 1;
+                    }
                 }
-            }
+            };
+
+            issue_one();
 
             bool iter_done = (_this->fsm_counter >= _this->tcdm_block_total)
                           && _this->all_slots_free();
@@ -1899,6 +1962,13 @@ void LightRedmule::fsm_handler(vp::Block *__this, vp::ClockEvent *event)
                     _this->tcdm_block_total = _this->get_routine_access_block_number();
                     _this->reg_fsm_state.set(ROUTINE);
                     _this->reg_busy.set(1);
+                    if (latency == 1)
+                    {
+                        // Bound by the accesses: the RTL streams go on one
+                        // access per cycle across the iterations, so the next
+                        // one issues in the cycle the last response landed
+                        issue_one();
+                    }
                 } else {
                     _this->tcdm_block_total = _this->get_storing_access_block_number();
                     _this->reg_fsm_state.set(STORING);
