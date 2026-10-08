@@ -141,7 +141,12 @@ class MagiaTree(Tree):
             print(f"PULP complex enabled with {self.nb_pulp_cores} cores")
 
 class MagiaDSE:
-    SOC_L2_LATENCY              = 2
+    # L2 of the testbench (magia_l2_mem_wrapper.sv): an axi_sim_mem answering
+    # one cycle after the request, behind an axi_dw_upsizer on each narrow
+    # port, which delays the narrow requests by two cycles (the wide ports
+    # reach the memory directly)
+    SOC_L2_LATENCY              = 1
+    SOC_L2_NARROW_UPSIZER_LATENCY = 2
     TILE_ICACHE_REFILL_LATENCY  = 2
     TILE_TCDM_LATENCY           = 1
 

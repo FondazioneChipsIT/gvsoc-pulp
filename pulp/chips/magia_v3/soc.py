@@ -19,7 +19,7 @@
 import gvsoc.systree
 import vp.clock_domain
 from memory.memory_v3 import Memory, MemoryV3Config
-from interco.router_v2 import Router, RouterConfig, KIND_UNTIMED
+from interco.router_v2 import Router, RouterConfig, KIND_UNTIMED, KIND_BANDWIDTH
 from utils.loader.loader_v2 import ElfLoader
 
 from pulp.chips.magia_v3.tile import MagiaV3Tile
@@ -228,7 +228,11 @@ class MagiaV3Soc(gvsoc.systree.Component):
 
         for y in range(0,tree.n_tiles_y):
             print(f"[NoC] Adding L2 at position x={0} y={y}")
-            noc.o_NARROW_BIND(l2_xbar.i_INPUT(2*y), x=0, y=y)
+            # Narrow port of the L2: the axi_dw_upsizer of the testbench
+            l2_upsizer = Router(self, f'L2-narrow-upsizer-{y}', config=RouterConfig(
+                kind=KIND_BANDWIDTH, latency=MagiaDSE.SOC_L2_NARROW_UPSIZER_LATENCY))
+            l2_upsizer.o_MAP_DEFAULT(l2_xbar.i_INPUT(2*y), name='L2-xbar')
+            noc.o_NARROW_BIND(l2_upsizer.i_INPUT(), x=0, y=y)
             noc.o_WIDE_BIND(l2_xbar.i_INPUT(2*y + 1), x=0, y=y)
 
         noc.o_MAP_DIR(base=MagiaArch.L2_ADDR_START,size=MagiaArch.L2_SIZE, dir=FlooNocV2Direction.LEFT,name=f'mem_left', rm_base=True)

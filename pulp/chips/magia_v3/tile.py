@@ -38,6 +38,7 @@ import gdbserver.gdbserver
 from memory.memory_v3 import Memory, MemoryV3Config
 from interco.router_v2 import Router, RouterConfig, RouterMapping, KIND_BEAT, KIND_UNTIMED
 from gvsoc.signature import IoV2Beat, IoV2SingleReq
+from utils.io_v2_shared_clock_bridge import IoV2SharedClockBridge
 
 from pulp.stdout.stdout_v3_v2 import StdoutV2
 from pulp.cpu.iss.spatz import Spatz
@@ -155,6 +156,7 @@ class MagiaV3Tile(gvsoc.systree.Component):
 
     def __init__(self, parent, name, tree, parser, tid: int=0):
         super().__init__(parent, name)
+        self.tid_name = f'tile-{tid}'
 
         #
         # Cores and instruction caches
@@ -225,24 +227,34 @@ class MagiaV3Tile(gvsoc.systree.Component):
 
         # AXI and OBI x-bars. They stream beats at the narrow width, one beat
         # per cycle per channel, with round-robin arbitration between inputs
-        # and a bounded number of outstanding bursts per input. The timing
-        # comes from the arbitration and the streaming, not from a fixed
-        # latency. Single-request masters (core data ports, cache refills, the
-        # loader) cross onto them through the framework's adapters.
+        # and a bounded number of outstanding bursts per input. As in the RTL
+        # (axi_xbar, obi_xbar) they are combinational, and their registers are
+        # the cuts around them, modelled as register slices (see cut()):
+        #
+        # - axi_xbar: LatencyMode CUT_ALL_PORTS, a cut on every slave and every
+        #   master port;
+        # - obi_xbar: an obi_cut on every master port and on the EXT (from the
+        #   AXI x-bar) and Spatz slave ports, none on the core ones.
+        #
+        # Single-request masters (core data ports, cache refills, the loader)
+        # cross onto them through the framework's adapters.
         tile_xbar = Router(self, f'tile-{tid}-axi-xbar', config=RouterConfig(
-            kind=KIND_BEAT, width=MagiaArch.BYTES_PER_WORD,
+            kind=KIND_BEAT, width=MagiaArch.BYTES_PER_WORD, combinational=True,
             max_pending_bursts_per_input=MagiaDSE.TILE_AXI_XBAR_MAX_BURSTS))
         obi_xbar = Router(self, f'tile-{tid}-obi-xbar', config=RouterConfig(
-            kind=KIND_BEAT, width=MagiaArch.BYTES_PER_WORD,
+            kind=KIND_BEAT, width=MagiaArch.BYTES_PER_WORD, combinational=True,
             max_pending_bursts_per_input=MagiaDSE.TILE_OBI_XBAR_MAX_BURSTS))
+        narrow = IoV2Beat(MagiaArch.BYTES_PER_WORD)
 
         # The two iDMA channels share the wide channel of the NoC: the AXI to
         # OBI channel only reads (AR/R) and the OBI to AXI one only writes
         # (AW/W/B), as in the RTL where they own disjoint channels of the wide
         # AXI port. This beat router only joins them onto the single NoC
-        # input, keeping the read and write channels independent.
+        # input, keeping the read and write channels independent. It is
+        # combinational, as the axi_rw_join of the RTL, and the NoC network
+        # interface behind it buffers what it receives.
         wide_xbar = Router(self, f'tile-{tid}-wide-xbar', config=RouterConfig(
-            kind=KIND_BEAT, width=MagiaArch.TILE_WIDE_WIDTH,
+            kind=KIND_BEAT, width=MagiaArch.TILE_WIDE_WIDTH, combinational=True,
             max_pending_bursts_per_input=MagiaDSE.TILE_WIDE_XBAR_MAX_BURSTS))
 
         # Data port of the control core: the event-unit window goes to the
@@ -321,7 +333,7 @@ class MagiaV3Tile(gvsoc.systree.Component):
 
         if MagiaArch.SPATZ_ENABLE:
             # Snitch spatz core data -> obi interconnect
-            snitch_spatz.o_DATA(obi_xbar.i_INPUT(OBI_IN_SPATZ_DATA))
+            snitch_spatz.o_DATA(self.cut('obi-sbr-cut-spatz', obi_xbar.i_INPUT(OBI_IN_SPATZ_DATA), narrow))
 
             # Snitch spatz core -> snitch spatz icache
             snitch_spatz.o_FETCH(snitch_spatz_i_cache.i_INPUT(0))
@@ -356,11 +368,12 @@ class MagiaV3Tile(gvsoc.systree.Component):
                 cluster_regs.o_PULP_START(pulp_id, pulp_cores[pulp_id].i_IRQ(11))
 
             # Cluster icache -> tile interconnect
-            pulp_i_cache.o_REFILL(tile_xbar.i_INPUT(AXI_IN_PULP_REFILL))
+            pulp_i_cache.o_REFILL(self.cut('axi-slv-cut-pulp-icache', tile_xbar.i_INPUT(AXI_IN_PULP_REFILL), narrow))
 
         # Control core data -> event unit direct link / obi interconnect
         core_cv32.o_DATA(cv32_data_demux.i_INPUT())
-        cv32_data_demux.o_MAP(event_unit_ico.i_INPUT(EU_IN_CV32), RouterMapping(
+        cv32_data_demux.o_MAP(self.cut('eu-direct-cut', event_unit_ico.i_INPUT(EU_IN_CV32),
+            narrow), RouterMapping(
             base=MagiaArch.EVENT_UNIT_ADDR_START,
             size=MagiaArch.EVENT_UNIT_SIZE, remove_base=True),
             name='event-unit-direct')
@@ -372,92 +385,95 @@ class MagiaV3Tile(gvsoc.systree.Component):
         cv32_i_cache.o_FLUSH_ACK(core_cv32.i_FLUSH_CACHE_ACK())
 
         # Icache -> tile interconnect
-        cv32_i_cache.o_REFILL(tile_xbar.i_INPUT(AXI_IN_CV32_REFILL))
+        cv32_i_cache.o_REFILL(self.cut('axi-slv-cut-cv32-icache', tile_xbar.i_INPUT(AXI_IN_CV32_REFILL), narrow))
 
         # Control core enable ports -> matching composite ports
         self.__o_ENTRY(core_cv32.i_ENTRY())
         self.__o_FETCHEN(core_cv32.i_FETCHEN())
 
         # Obi xbar -> RedMule
-        obi_xbar.o_MAP(redmule.i_INPUT_V2(), RouterMapping(
+        obi_xbar.o_MAP(self.cut(f'obi-mgr-cut-redmule', redmule.i_INPUT_V2(), narrow), RouterMapping(
             base=MagiaArch.REDMULE_CTRL_ADDR_START,
             size=MagiaArch.REDMULE_CTRL_SIZE, remove_base=True),
             name=f'redmule-mm-{tid}-mem')
 
         # Obi xbar -> iDMA mmapped controller
-        obi_xbar.o_MAP(idma_mm_ctrl.i_INPUT(), RouterMapping(
+        obi_xbar.o_MAP(self.cut(f'obi-mgr-cut-idma', idma_mm_ctrl.i_INPUT(), narrow), RouterMapping(
             base=MagiaArch.IDMA_CTRL_ADDR_START,
             size=MagiaArch.IDMA_CTRL_SIZE, remove_base=True),
             name=f'iDMA-ctrl-mm-{tid}-mem')
 
         # Obi xbar -> fsync mmapped controller
-        obi_xbar.o_MAP(fsync_mm_ctrl.i_INPUT(), RouterMapping(
+        obi_xbar.o_MAP(self.cut(f'obi-mgr-cut-fsync', fsync_mm_ctrl.i_INPUT(), narrow), RouterMapping(
             base=MagiaArch.FSYNC_CTRL_ADDR_START,
             size=MagiaArch.FSYNC_CTRL_SIZE, remove_base=True),
             name=f'fs-ctrl-mm-{tid}-mem')
 
         # Obi xbar -> event unit
-        obi_xbar.o_MAP(event_unit_ico.i_INPUT(EU_IN_OBI), RouterMapping(
+        obi_xbar.o_MAP(self.cut(f'obi-mgr-cut-event-unit', event_unit_ico.i_INPUT(EU_IN_OBI), narrow), RouterMapping(
             base=MagiaArch.EVENT_UNIT_ADDR_START,
             size=MagiaArch.EVENT_UNIT_SIZE, remove_base=True),
             name='event-unit')
         event_unit_ico.o_MAP_DEFAULT(event_unit.i_INPUT(), name='event-unit')
 
         # Obi xbar -> local stack
-        obi_xbar.o_MAP(l1_tcdm.i_INPUT(MagiaTileTcdm.NARROW_OBI_STACK), RouterMapping(
+        obi_xbar.o_MAP(self.cut(f'obi-mgr-cut-stack', l1_tcdm.i_INPUT(MagiaTileTcdm.NARROW_OBI_STACK), narrow), RouterMapping(
             base=MagiaArch.STACK_ADDR_START,
             size=MagiaArch.STACK_SIZE, remove_base=False),
             name="local-stack")
 
         if MagiaArch.SPATZ_ENABLE:
             # Obi xbar -> snitch spatz bootrom
-            obi_xbar.o_MAP(snitch_spatz_rom.i_INPUT(), RouterMapping(
+            obi_xbar.o_MAP(self.cut(f'obi-mgr-cut-spatz-bootrom', snitch_spatz_rom.i_INPUT(), narrow), RouterMapping(
                 base=MagiaArch.SPATZ_BOOTROM_ADDR,
                 size=MagiaArch.SPATZ_BOOTROM_SIZE, remove_base=True),
                 name="snitch-spatz-bootrom")
 
         if MagiaArch.SPATZ_ENABLE or MagiaArch.PULP_ENABLE:
             # Obi xbar -> cluster registers
-            obi_xbar.o_MAP(cluster_regs.i_INPUT(), RouterMapping(
+            obi_xbar.o_MAP(self.cut(f'obi-mgr-cut-cluster-regs', cluster_regs.i_INPUT(), narrow), RouterMapping(
                 base=MagiaArch.CLUSTER_CTRL_START,
                 size=MagiaArch.CLUSTER_CTRL_SIZE, remove_base=True),
                 name="cluster-regs")
 
         # Obi xbar -> local L1
-        obi_xbar.o_MAP(l1_tcdm.i_INPUT(MagiaTileTcdm.NARROW_OBI_L1), RouterMapping(
+        obi_xbar.o_MAP(self.cut(f'obi-mgr-cut-l1', l1_tcdm.i_INPUT(MagiaTileTcdm.NARROW_OBI_L1), narrow), RouterMapping(
             base=MagiaArch.L1_ADDR_START+(tid*MagiaArch.L1_TILE_OFFSET),
             size=MagiaArch.L1_SIZE, remove_base=False,
             remove_offset=(tid*MagiaArch.L1_TILE_OFFSET)),
             name="obi-to-l1-mem-local")
 
         # Tile xbar -> obi xbar, for the local L1
-        tile_xbar.o_MAP(obi_xbar.i_INPUT(OBI_IN_AXI), RouterMapping(
+        tile_xbar.o_MAP(self.cut('axi-mst-cut-obi', self.cut('obi-sbr-cut-ext',
+            obi_xbar.i_INPUT(OBI_IN_AXI), narrow), narrow), RouterMapping(
             base=MagiaArch.L1_ADDR_START+(tid*MagiaArch.L1_TILE_OFFSET),
             size=MagiaArch.L1_SIZE, remove_base=False),
             name="axi-to-obi-l1-mem")
 
         # Obi xbar -> kill module
-        obi_xbar.o_MAP(self.__i_KILLER_OUTPUT(), RouterMapping(
+        obi_xbar.o_MAP(self.cut(f'obi-mgr-cut-kill', self.__i_KILLER_OUTPUT(), narrow), RouterMapping(
             base=MagiaArch.TEST_END_ADDR_START,
             size=MagiaArch.TEST_END_SIZE, remove_base=False),
             name="Kill-sim-mem")
 
         # Obi xbar -> uart
-        obi_xbar.o_MAP(stdout.i_INPUT(), RouterMapping(
+        obi_xbar.o_MAP(self.cut(f'obi-mgr-cut-stdout', stdout.i_INPUT(), narrow), RouterMapping(
             base=MagiaArch.STDOUT_ADDR_START,
             size=MagiaArch.STDOUT_SIZE, remove_base=False),
             name="local-uart-mem")
 
         # Everything that is not local goes to the tile xbar: remote tiles' L1
         # and reserved memory, plus the off-tile L2
-        obi_xbar.o_MAP_DEFAULT(tile_xbar.i_INPUT(AXI_IN_OBI), name="obi2axi-off-tile")
+        obi_xbar.o_MAP_DEFAULT(self.cut('obi-mgr-cut-l2', self.cut('axi-slv-cut-core-data',
+            tile_xbar.i_INPUT(AXI_IN_OBI), narrow), narrow), name="obi2axi-off-tile")
 
         # Same on the AXI side: everything but the local L1 leaves the tile on
         # the narrow NoC channel
-        tile_xbar.o_MAP_DEFAULT(self.__i_NARROW_OUTPUT(), name="axi-to-off-tile")
+        tile_xbar.o_MAP_DEFAULT(self.cut('axi-mst-cut-noc', self.__i_NARROW_OUTPUT(), narrow),
+            name="axi-to-off-tile")
 
         # NoC narrow channel -> tile xbar
-        self.__o_NARROW_INPUT(tile_xbar.i_INPUT(AXI_IN_NOC))
+        self.__o_NARROW_INPUT(self.cut('axi-slv-cut-noc', tile_xbar.i_INPUT(AXI_IN_NOC), narrow))
 
         # NoC wide channel -> local L1
         self.__o_WIDE_INPUT(l1_tcdm.i_WIDE_INPUT(MagiaTileTcdm.WIDE_NOC))
@@ -504,6 +520,21 @@ class MagiaV3Tile(gvsoc.systree.Component):
 
         # Enable debug
         gdbserver.gdbserver.Gdbserver(self, 'gdbserver')
+
+    def cut(self, name: str, itf: gvsoc.systree.SlaveItf, signature) -> gvsoc.systree.SlaveItf:
+        """Register slice in front of ``itf``, for a cut of the RTL (axi_cut,
+        obi_cut, the cut of the event-unit direct link): one cycle in each
+        direction, one request or response per channel and per cycle. Returns
+        its input.
+
+        The slice must be on the beat plane (``signature`` an IoV2Beat): it
+        acknowledges writes with io_v2_write_ack(), which rewrites a request
+        owned by its master in place (data pointer cleared). A core LSU reuses
+        its request objects, so it has to reach the slice through the
+        framework's single-request-to-beat adapter, which sends pool beats."""
+        cut = IoV2SharedClockBridge(self, f'{self.tid_name}-{name}', signature=signature)
+        cut.o_OUTPUT(itf)
+        return cut.i_INPUT()
 
     @staticmethod
     def idma_config() -> dict:
