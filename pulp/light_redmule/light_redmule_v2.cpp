@@ -241,6 +241,7 @@ public:
     int                 cxt_use_ptr;      //context slot the FSM is executing
     int                 cxt_job_id[2];    //job id per context slot, -1 = empty
     int                 running_job_id;   //current/last running job id, -1 = none yet
+    uint8_t             completed_jobs;   //RUNNING_JOB: jobs completed so far (job_running_id_q)
     uint32_t            cxt_m_size[2];
     uint32_t            cxt_n_size[2];
     uint32_t            cxt_k_size[2];
@@ -471,6 +472,7 @@ LightRedmule::LightRedmule(vp::ComponentConf &config)
     this->cxt_job_id[0]     = -1;
     this->cxt_job_id[1]     = -1;
     this->running_job_id    = -1;
+    this->completed_jobs    = 0;
     for (int i = 0; i < 2; i++) {
         this->cxt_m_size[i]       = 0;
         this->cxt_n_size[i]       = 0;
@@ -1288,6 +1290,7 @@ void LightRedmule::soft_clear(uint32_t value)
         this->cxt_job_id[0]   = -1;
         this->cxt_job_id[1]   = -1;
         this->running_job_id  = -1;
+        this->completed_jobs  = 0;
         this->cxt_cfg_ptr     = 0;
         this->cxt_use_ptr     = 0;
         this->job_id_counter  = 0;
@@ -1506,9 +1509,12 @@ vp::IoReqStatus LightRedmule::req_v2(vp::Block *__this, vp::IoReq *req)
                 break;
             }
             case 0x10: { //REDMULE_RUNNING_JOB
-                uint32_t running_job = (uint32_t) _this->running_job_id;
+                //Number of jobs completed so far, as job_running_id_q in
+                //hwpe_ctrl_target.sv (incremented on each job_done, cleared
+                //by the soft clear), not the id of the job last started
+                uint32_t running_job = (uint32_t) _this->completed_jobs;
                 memcpy((void *)data, (void *)&running_job, size);
-                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] RUNNING_JOB -> %d\n", _this->running_job_id);
+                _this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule] RUNNING_JOB -> %d\n", running_job);
                 break;
             }
             default:
@@ -2038,6 +2044,7 @@ void LightRedmule::fsm_handler(vp::Block *__this, vp::ClockEvent *event)
             //offload/custom-instruction path, which never touches job_pending)
             _this->cxt_job_id[_this->cxt_use_ptr] = -1;
             _this->cxt_use_ptr = 1 - _this->cxt_use_ptr;
+            _this->completed_jobs++;
             if (_this->job_pending > 0) {
                 _this->job_pending--;
             }
