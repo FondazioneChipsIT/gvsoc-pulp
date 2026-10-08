@@ -165,14 +165,17 @@ class MagiaV3Soc(gvsoc.systree.Component):
         # max_burst_size is the 4 KiB AXI page: the NI checks that no target
         # range splits a page, which holds since the tile L1 windows and the L2
         # window are whole pages, so a burst always has a single destination.
+        # As in the RTL, the routers have input FIFOs of 2 entries (floo_nw_router
+        # InFifoDepth) and the chimneys have no cut on the request channels
+        # (ChimneyDefaultCfg CutAx = 0).
         noc = FlooNocV22dMeshNarrowWide(self,
                                     name='magia-noc',
                                     narrow_width=MagiaArch.BYTES_PER_WORD,
                                     wide_width=MagiaArch.TILE_WIDE_WIDTH,
                                     ni_outstanding_reqs=8, #need to double check this with RTL
-                                    router_input_queue_size=4, #need to double check this with RTL
+                                    router_input_queue_size=2,
                                     dim_x=tree.n_tiles_x+1, dim_y=tree.n_tiles_y,
-                                    max_burst_size=4096)
+                                    max_burst_size=4096, cut_ax=False)
 
 
         # Create noc routers
