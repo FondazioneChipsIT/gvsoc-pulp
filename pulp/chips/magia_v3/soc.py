@@ -233,13 +233,13 @@ class MagiaV3Soc(gvsoc.systree.Component):
         for y in range(0,tree.n_tiles_y):
             print(f"[NoC] Adding L2 at position x={0} y={y}")
             # Narrow port of the L2: the axi_dw_upsizer of the testbench, which
-            # delays the AR by two cycles. It serves the reads of one AXI ID one
-            # at a time (the next AR the cycle after the last R beat), i.e. those
-            # of one master; the masters of the narrow network already have a
-            # single read in flight here (core LSU, icache refills), so the
-            # reads are not bounded at the port
+            # delays the AR by two cycles and serves one read at a time for the
+            # whole row: the next AR is taken the cycle after the last R beat of
+            # the previous one (ar_valid held meanwhile on the RTL waveforms,
+            # the reads of all the tiles of the row reaching it through the L2
+            # chimney). With 8 tiles per row it bounds the L2 reads of the row.
             l2_narrow_port = L2Port(self, f'L2-narrow-port-{y}', width=MagiaArch.BYTES_PER_WORD,
-                req_latency=MagiaDSE.SOC_L2_NARROW_UPSIZER_LATENCY)
+                req_latency=MagiaDSE.SOC_L2_NARROW_UPSIZER_LATENCY, max_reads=1)
             l2_narrow_port.o_OUTPUT(l2_xbar.i_INPUT(2*y))
             noc.o_NARROW_BIND(l2_narrow_port.i_INPUT(), x=0, y=y)
             # Wide port of the L2: the axi_sim_mem, reached directly
