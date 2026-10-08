@@ -960,6 +960,15 @@ uint32_t LightRedmule::get_routine_access_block_number(){
 
 }
 
+// TODO: the preload is shorter than in the RTL (~20 cycles per job on MAGIA).
+// In the RTL the X, W and Y streams run concurrently on the single TCDM port
+// with fixed priority X > W > Y: X prefetches the next N chunk too, W fills its
+// FIFO (9 rows), and the computation starts only once the z_buffer has loaded
+// Y, which therefore comes last (LOAD_W ~35 cycles after the trigger, both for
+// MAGIA test_mm_ws and test_mm_os). Here the preload is sequential and only
+// loads Y and the first X chunk; W and the X prefetch overlap the first
+// iteration instead. Modeling it needs the three prioritized streams, with the
+// first W chunk and the X prefetch moved into the preload.
 uint32_t LightRedmule::get_preload_access_block_number(){
     uint32_t total_blocks       = 0;
     uint32_t tcdms_bw           = this->bandwidth / this->elem_size;
