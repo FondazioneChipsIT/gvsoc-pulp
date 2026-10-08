@@ -28,6 +28,7 @@ from pulp.chips.magia_v3.arch import *
 from pulp.floonoc_v2.floonoc_v2 import FlooNocV22dMeshNarrowWide, FlooNocV2Direction
 from pulp.chips.magia_v3.fractal_sync.fractal_sync import *
 from pulp.chips.magia_v3.kill_module.kill_module import *
+from pulp.chips.magia_v3.l2_port.l2_port import L2Port
 from typing import List, Dict
 import math
 
@@ -236,7 +237,10 @@ class MagiaV3Soc(gvsoc.systree.Component):
                 kind=KIND_BANDWIDTH, latency=MagiaDSE.SOC_L2_NARROW_UPSIZER_LATENCY))
             l2_upsizer.o_MAP_DEFAULT(l2_xbar.i_INPUT(2*y), name='L2-xbar')
             noc.o_NARROW_BIND(l2_upsizer.i_INPUT(), x=0, y=y)
-            noc.o_WIDE_BIND(l2_xbar.i_INPUT(2*y + 1), x=0, y=y)
+            # Wide port of the L2: the axi_sim_mem, reached directly
+            l2_wide_port = L2Port(self, f'L2-wide-port-{y}', width=MagiaArch.TILE_WIDE_WIDTH)
+            l2_wide_port.o_OUTPUT(l2_xbar.i_INPUT(2*y + 1))
+            noc.o_WIDE_BIND(l2_wide_port.i_INPUT(), x=0, y=y)
 
         noc.o_MAP_DIR(base=MagiaArch.L2_ADDR_START,size=MagiaArch.L2_SIZE, dir=FlooNocV2Direction.LEFT,name=f'mem_left', rm_base=True)
 
