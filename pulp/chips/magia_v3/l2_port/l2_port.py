@@ -27,13 +27,19 @@ class L2Port(gvsoc.systree.Component):
     it, which must answer inline. A read returns its first beat after the
     latency the memory annotates (at least one cycle), then one beat per cycle;
     a write burst is acknowledged the same latency after its last beat.
+
+    ``req_latency`` cycles are added before the memory, and ``max_reads``
+    (0: no limit) bounds the read bursts in flight, the next one being taken
+    the cycle after the last beat of a previous one.
     """
 
-    def __init__(self, parent: gvsoc.systree.Component, name: str, width: int):
+    def __init__(self, parent: gvsoc.systree.Component, name: str, width: int,
+            req_latency: int=0, max_reads: int=0):
         super().__init__(parent, name)
 
         self.add_sources(['pulp/chips/magia_v3/l2_port/l2_port.cpp'])
-        self.add_properties({'width': width})
+        self.add_properties({'width': width, 'req_latency': req_latency,
+            'max_reads': max_reads})
         self.width = width
 
     def i_INPUT(self) -> gvsoc.systree.SlaveItf:

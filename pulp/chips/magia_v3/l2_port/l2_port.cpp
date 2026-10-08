@@ -32,6 +32,12 @@
  * write beat is written to the memory when it arrives, and the burst is
  * acknowledged latency cycles after its last beat.
  *
+ * req_latency cycles are added before the memory (the axi_dw_upsizer of a
+ * narrow port, which delays the AR by two cycles), and max_reads bounds the
+ * read bursts in flight: on a narrow port the upsizer takes the next AR only
+ * the cycle after the last R beat of the previous one (one read at a time),
+ * the master being denied meanwhile.
+ *
  * This replaces the framework beat-to-single-req adapter, which takes one
  * more cycle to send a read to the memory and one more to return its
  * response, i.e. two cycles more than the RTL on every L2 read
@@ -49,6 +55,8 @@ private:
         vp::IoReq *req;
         int64_t ready;
         bool is_write;
+        // Last beat of a read burst: frees a read slot once given back
+        bool last_read = false;
     };
 
     static vp::IoReqStatus in_req(vp::Block *__this, vp::IoReq *req);
@@ -70,7 +78,15 @@ private:
     vp::IoReq mem_req;
 
     int width;
+    int64_t req_latency;
+    int max_reads;
     vp::IoReqAllocator *beat_allocator;
+    // Read bursts taken and not fully given back
+    int reads_in_flight;
+    // Set when a read was denied for lack of slot; the master is retried the
+    // cycle after a slot frees (retry_cycle)
+    bool read_req_denied;
+    int64_t retry_cycle;
 
     // Read beats and write acknowledgements to give back, in order
     std::deque<Response> read_queue;
@@ -95,6 +111,8 @@ L2Port::L2Port(vp::ComponentConf &config)
     this->fsm_event = this->event_new(&L2Port::fsm_handler);
 
     this->width = this->get_js_config()->get_child_int("width");
+    this->req_latency = this->get_js_config()->get_child_int("req_latency");
+    this->max_reads = this->get_js_config()->get_child_int("max_reads");
     this->beat_allocator = vp::IoReqAllocator::get(this->width);
 }
 
@@ -110,6 +128,9 @@ void L2Port::reset(bool active)
     this->write_status = vp::IO_RESP_OK;
     this->read_denied = false;
     this->write_denied = false;
+    this->reads_in_flight = 0;
+    this->read_req_denied = false;
+    this->retry_cycle = -1;
 }
 
 int64_t L2Port::access(uint64_t addr, uint8_t *data, uint64_t size, bool is_write,
@@ -140,12 +161,18 @@ vp::IoReqStatus L2Port::in_req(vp::Block *__this, vp::IoReq *req)
 
     if (opcode == vp::READ)
     {
+        if (_this->max_reads > 0 && _this->reads_in_flight >= _this->max_reads)
+        {
+            _this->read_req_denied = true;
+            return vp::IO_REQ_DENIED;
+        }
+        _this->reads_in_flight++;
         // The whole burst is read now, its beats are given back one per cycle
         uint64_t size = req->get_size();
         uint64_t addr = req->get_addr();
         uint64_t offset = 0;
-        _this->trace.msg(vp::Trace::LEVEL_TRACE, "Read burst (addr: 0x%lx, size: 0x%lx)\n",
-            addr, size);
+        _this->trace.msg(vp::Trace::LEVEL_TRACE, "Read burst (addr: 0x%lx, size: 0x%lx, "
+            "initiator: %p, burst_id: %ld)\n", addr, size, req->initiator, (long)req->burst_id);
         while (offset < size || offset == 0)
         {
             uint64_t beat_size = std::min<uint64_t>(size - offset, _this->width);
@@ -163,10 +190,11 @@ vp::IoReqStatus L2Port::in_req(vp::Block *__this, vp::IoReq *req)
             beat->burst_id = req->burst_id;
             beat->initiator = req->initiator;
 
-            int64_t ready = now + std::max((int64_t)1, latency);
+            int64_t ready = now + _this->req_latency + std::max((int64_t)1, latency);
             if (ready <= _this->last_read_ready) ready = _this->last_read_ready + 1;
             _this->last_read_ready = ready;
-            _this->read_queue.push_back(Response{beat, ready, false});
+            _this->read_queue.push_back(Response{beat, ready, false,
+                offset + beat_size >= size});
 
             offset += beat_size;
             if (beat_size == 0) break;
@@ -209,7 +237,8 @@ vp::IoReqStatus L2Port::in_req(vp::Block *__this, vp::IoReq *req)
     ack->set_addr(addr);
     ack->set_size(size);
     ack->set_resp_status(_this->write_status);
-    _this->write_queue.push_back(Response{ack, now + std::max((int64_t)1, latency), true});
+    _this->write_queue.push_back(Response{ack,
+        now + _this->req_latency + std::max((int64_t)1, latency), true});
     _this->schedule();
     return vp::IO_REQ_GRANTED;
 }
@@ -221,12 +250,21 @@ void L2Port::send_up(std::deque<Response> &queue, bool &denied)
         return;
     }
     vp::IoReq *resp = queue.front().req;
+    bool last_read = queue.front().last_read;
     if (this->in.resp(resp) == vp::IO_RESP_DENIED)
     {
         denied = true;
         return;
     }
     queue.pop_front();
+    if (last_read)
+    {
+        this->reads_in_flight--;
+        if (this->read_req_denied)
+        {
+            this->retry_cycle = this->clock.get_cycles() + 1;
+        }
+    }
 }
 
 vp::IoRespAck L2Port::out_resp(vp::Block *__this, vp::IoReq *req)
@@ -261,6 +299,12 @@ void L2Port::fsm_handler(vp::Block *__this, vp::ClockEvent *event)
     L2Port *_this = (L2Port *)__this;
     _this->send_up(_this->read_queue, _this->read_denied);
     _this->send_up(_this->write_queue, _this->write_denied);
+    if (_this->retry_cycle != -1 && _this->retry_cycle <= _this->clock.get_cycles())
+    {
+        _this->retry_cycle = -1;
+        _this->read_req_denied = false;
+        _this->in.retry(vp::IO_RETRY_READ);
+    }
     _this->schedule();
 }
 
@@ -276,6 +320,10 @@ void L2Port::schedule()
     {
         int64_t ready = this->write_queue.front().ready;
         if (next == -1 || ready < next) next = ready;
+    }
+    if (this->retry_cycle != -1 && (next == -1 || this->retry_cycle < next))
+    {
+        next = this->retry_cycle;
     }
     if (next == -1)
     {
