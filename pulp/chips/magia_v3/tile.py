@@ -58,6 +58,7 @@ from pulp.chips.magia_v3.ctrl_core.core import CV32CtrlCore
 from pulp.chips.magia_v3.pulp_core.core import CV32PulpCore
 from pulp.chips.magia_v3.fractal_sync_mm_ctrl.fractal_sync_mm_ctrl import FSync_mm_ctrl
 from pulp.chips.magia_v3.idma_mm_ctrl.idma_mm_ctrl import iDMA_mm_ctrl
+from pulp.chips.magia_v3.obi_cut.obi_cut import ObiCut
 from pulp.chips.magia_v3.cluster_regs.cluster_regs import ClusterRegs
 
 
@@ -411,14 +412,16 @@ class MagiaV3Tile(gvsoc.systree.Component):
             size=MagiaArch.REDMULE_CTRL_SIZE, remove_base=True),
             name=f'redmule-mm-{tid}-mem')
 
-        # Obi xbar -> iDMA mmapped controller
-        obi_xbar.o_MAP(self.cut(f'obi-mgr-cut-idma', idma_mm_ctrl.i_INPUT(), narrow), RouterMapping(
+        # Obi xbar -> iDMA mmapped controller (idma_obi_ctrl_decoder.sv answers
+        # with a combinational rvalid)
+        obi_xbar.o_MAP(self.reg_cut(f'obi-mgr-cut-idma', idma_mm_ctrl.i_INPUT()), RouterMapping(
             base=MagiaArch.IDMA_CTRL_ADDR_START,
             size=MagiaArch.IDMA_CTRL_SIZE, remove_base=True),
             name=f'iDMA-ctrl-mm-{tid}-mem')
 
-        # Obi xbar -> fsync mmapped controller
-        obi_xbar.o_MAP(self.cut(f'obi-mgr-cut-fsync', fsync_mm_ctrl.i_INPUT(), narrow), RouterMapping(
+        # Obi xbar -> fsync mmapped controller (combinational rvalid as well:
+        # an access takes the two cycles of the cut on the RTL)
+        obi_xbar.o_MAP(self.reg_cut(f'obi-mgr-cut-fsync', fsync_mm_ctrl.i_INPUT()), RouterMapping(
             base=MagiaArch.FSYNC_CTRL_ADDR_START,
             size=MagiaArch.FSYNC_CTRL_SIZE, remove_base=True),
             name=f'fs-ctrl-mm-{tid}-mem')
@@ -547,6 +550,17 @@ class MagiaV3Tile(gvsoc.systree.Component):
         its request objects, so it has to reach the slice through the
         framework's single-request-to-beat adapter, which sends pool beats."""
         cut = IoV2SharedClockBridge(self, f'{self.tid_name}-{name}', signature=signature)
+        cut.o_OUTPUT(itf)
+        return cut.i_INPUT()
+
+    def reg_cut(self, name: str, itf: gvsoc.systree.SlaveItf,
+            resp_latency: int=0) -> gvsoc.systree.SlaveItf:
+        """obi_cut of the RTL in front of the register slave ``itf``, for a
+        master port of the OBI crossbar. Unlike cut() followed by the
+        framework beat-to-single-req adapter, a slave answering inline costs
+        the two cycles of the cut only (see ObiCut). Returns its input."""
+        cut = ObiCut(self, f'{self.tid_name}-{name}', width=MagiaArch.BYTES_PER_WORD,
+            resp_latency=resp_latency)
         cut.o_OUTPUT(itf)
         return cut.i_INPUT()
 
