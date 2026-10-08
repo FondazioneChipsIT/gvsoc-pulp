@@ -101,6 +101,9 @@ enum iter_instruction {
     INSTR_LOAD_Y,
     INSTR_LOAD_W,
     INSTR_LOAD_W_COMPUTE,
+    // Load of a W row the RTL reads beyond N (see get_w_rows()): timing only,
+    // the row is padding the RTL gates to zero
+    INSTR_LOAD_W_PAD,
     INSTR_LOAD_X,
     INSTR_STOR_Z,
     INSTR_FORWARD_YZ
@@ -149,6 +152,7 @@ public:
     uint32_t inc_addr(uint32_t addr, uint32_t stride, uint32_t tile_row);
     uint32_t next_iteration();
     uint32_t get_redmule_array_runtime();
+    uint32_t get_w_rows(uint32_t iter_k);
     uint32_t get_routine_access_block_number();
     uint32_t get_preload_access_block_number();
     uint32_t get_storing_access_block_number();
@@ -268,6 +272,7 @@ public:
     uint32_t            iter_z_addr;
     uint32_t            x_acc_block;
     uint32_t            w_acc_block;
+    uint32_t            w_pad_block;      // W rows loaded for timing only (get_w_rows())
     uint32_t            y_acc_block;
     uint32_t            z_acc_block;
     uint32_t            z_store_width;
@@ -386,6 +391,7 @@ LightRedmule::LightRedmule(vp::ComponentConf &config)
     this->iter_z_addr       = 0;
     this->x_acc_block       = 0;
     this->w_acc_block       = 0;
+    this->w_pad_block       = 0;
     this->y_acc_block       = 0;
     this->z_acc_block       = 0;
     this->z_store_width     = 0;
@@ -497,6 +503,7 @@ void LightRedmule::init_redmule_meta_data(){
 
     this->x_acc_block = 0;
     this->w_acc_block = 0;
+    this->w_pad_block = 0;
     this->y_acc_block = 0;
     this->z_acc_block = 0;
 
@@ -579,6 +586,16 @@ uint32_t LightRedmule::next_addr(){
         this->tcdm_req->set_is_write(0);
         this->tcdm_req->set_size(buffer_w * this->elem_size);
         this->iter_instruction  = INSTR_LOAD_Y;
+    } else if (this->w_pad_block > 0)
+    {
+        // Padding rows first, so that the last real W row still triggers the
+        // compute. Timing only: same row address, nothing stored.
+        addr = this->iter_w_addr;
+        this->w_pad_block -= 1;
+        this->trace.msg(vp::Trace::LEVEL_TRACE,"[LightRedmule][Address] W padding tile at 0x%11x | #W padding tile left %d\n", addr, this->w_pad_block);
+        this->tcdm_req->set_is_write(0);
+        this->tcdm_req->set_size(buffer_w * this->elem_size);
+        this->iter_instruction  = INSTR_LOAD_W_PAD;
     } else if (this->w_acc_block > 0)
     {
         addr = this->iter_w_addr;
@@ -818,6 +835,7 @@ uint32_t LightRedmule::get_routine_access_block_number(){
 
     this->x_acc_block = 0;
     this->w_acc_block = 0;
+    this->w_pad_block = 0;
     this->y_acc_block = 0;
     this->z_acc_block = 0;
     
@@ -830,6 +848,8 @@ uint32_t LightRedmule::get_routine_access_block_number(){
         this->w_acc_block = tcdms_bw;
     }
     total_blocks += this->w_acc_block;
+    this->w_pad_block = this->get_w_rows(this->iter_k) - this->w_acc_block;
+    total_blocks += this->w_pad_block;
     this->iter_w_addr = this->calculate_tile_base_address(this->w_addr, this->k_size, buffer_n, buffer_w, this->iter_k, this->iter_j);
 
     // X block
@@ -904,6 +924,7 @@ uint32_t LightRedmule::get_preload_access_block_number(){
 
     this->x_acc_block = 0;
     this->w_acc_block = 0;
+    this->w_pad_block = 0;
     this->y_acc_block = 0;
     this->z_acc_block = 0;
 
@@ -925,6 +946,7 @@ uint32_t LightRedmule::get_storing_access_block_number(){
 
     this->x_acc_block = 0;
     this->w_acc_block = 0;
+    this->w_pad_block = 0;
     this->y_acc_block = 0;
     this->z_acc_block = 0;
 
@@ -949,10 +971,27 @@ uint32_t LightRedmule::get_redmule_array_runtime(){
     uint32_t runtime        = tcdms_bw * (this->ce_pipe + 1);
     if (this->iter_k == (this->x_row_tiles - 1) && (this->x_row_lefts > 0))
     {
-        runtime = this->x_row_lefts * (this->ce_pipe + 1);
+        // The array goes through every W row the RTL loads, padding included
+        runtime = this->get_w_rows(this->iter_k) * (this->ce_pipe + 1);
     }
     runtime_pices = (runtime + runtime_unit - 1)/runtime_unit;
     return runtime_pices * runtime_unit;
+}
+
+// Rows of W the RTL loads and the array processes for the N tile iter_k
+// (redmule_tiler.sv): a job with N <= Height runs as if N were MinimumSizeN
+// (2 * Height), and the W-row loop is rounded up to a multiple of Height. The
+// rows past N are gated to zero, so they cost time but do not change the
+// result. Height is ce_width here (the K tile is ce_width * (ce_pipe + 1)).
+uint32_t LightRedmule::get_w_rows(uint32_t iter_k)
+{
+    uint32_t height  = this->ce_width;
+    uint32_t chunk   = this->bandwidth / this->elem_size;
+    uint32_t n_eff   = (this->n_size <= height) ? 2 * height : this->n_size;
+    uint32_t total   = (n_eff + height - 1) / height * height;
+    uint32_t start   = iter_k * chunk;
+    if (total <= start) return 0;
+    return (total - start) < chunk ? (total - start) : chunk;
 }
 
 uint32_t LightRedmule::op_foramt_parser(uint32_t op_format) {
