@@ -104,6 +104,19 @@ class SnitchIcacheConfig(Config):
         "through the refill port when it is otherwise idle, hiding the "
         "refill latency of streaming code (RTL snitch_icache prefetcher)"
     ))
+    round_robin: bool = cfg_field(default=False, dump=True, desc=(
+        "Replace the ways of a set in turn instead of pseudo-randomly, like "
+        "the L0 of the RTL snitch_icache (counter cnt_q of "
+        "snitch_icache_l0.sv). With a loop larger than the cache, this misses "
+        "on every line where the pseudo-random policy keeps some of them"
+    ))
+    async_latency: bool = cfg_field(default=False, dump=True, desc=(
+        "Answer a request which has a latency (a miss refilled inline, a hit on "
+        "a line still being refilled) asynchronously, once the latency has "
+        "elapsed, instead of inline with the latency annotated. For a master "
+        "which ignores the latency of an inline answer, like the iss_v2 "
+        "prefetcher, which only accounts it in its statistics"
+    ))
 
 
 class SnitchIcache(Component):
