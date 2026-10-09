@@ -31,13 +31,16 @@ class CV32CtrlCore(Cv32e40p):
     half-precision conversions gvsoc implements in the Xf16 subsets.
 
     It boots from the address it receives on i_ENTRY once i_FETCHEN is raised,
-    so it starts with fetch disabled.
+    so it starts with fetch disabled. Its mtvec starts at ``mtvec_addr``: the
+    tile RTL ties mtvec_addr_i to boot_addr_i, and the SDK crt0 relies on it
+    (the vector table is at the start of the binary, the reset entry at +0x80).
     """
-    def __init__(self, parent: gvsoc.systree.Component, name: str, core_id: int=0):
+    def __init__(self, parent: gvsoc.systree.Component, name: str, core_id: int=0,
+            mtvec_addr: int=0):
 
         config = Cv32e40pConfig(isa='rv32imfc', zfinx=True, corev_pulp=True,
             corev_cluster=True, num_mhpmcounters=29, hart_id=core_id,
-            fetch_enable=False, htif=False)
+            fetch_enable=False, htif=False, mtvec_addr=mtvec_addr)
 
         # Xf16 has to come before Xf16alt, whose handlers use the float
         # helpers rvXf16.hpp includes

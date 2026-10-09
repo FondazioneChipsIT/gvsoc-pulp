@@ -47,8 +47,6 @@ from pulp.snitch.snitch_cluster.spatz.spatz_tcdm_interco import (SpatzTcdmInterc
                                                                 SpatzTcdmIntercoConfig)
 from pulp.light_redmule.light_redmule_v2 import LightRedmule
 from pulp.event_unit.event_unit_v3_v2 import Event_unit
-from pulp.cv32e40p.cv32e40p_testbench_straps import (Cv32e40pTestbenchStraps,
-                                                     Cv32e40pTestbenchStrapsConfig)
 from ips.pulp.idma_v3.axi_obi_dma import AxiObiDmaV3
 from ips.pulp.idma_v3.axi_obi_dma_config import AxiObiDmaV3Config
 
@@ -173,15 +171,8 @@ class MagiaV3Tile(gvsoc.systree.Component):
         #
 
         # Control core
-        core_cv32 = CV32CtrlCore(self, f'tile-{tid}-cv32-core', core_id=tid)
-
-        # Static inputs of the control core: mtvec starts at the boot address,
-        # as magia_tile.sv ties mtvec_addr_i to boot_addr_i. The crt0 of the
-        # control core relies on it, since it does not set mtvec.
-        core_cv32_straps = Cv32e40pTestbenchStraps(self, f'tile-{tid}-cv32-straps',
-            config=Cv32e40pTestbenchStrapsConfig(mtvec_addr=MagiaArch.BOOT_ADDR))
-        core_cv32_straps.o_MTVEC_ADDR(gvsoc.systree.SlaveItf(core_cv32, 'mtvec_addr',
-            signature='wire<uint32_t>'))
+        core_cv32 = CV32CtrlCore(self, f'tile-{tid}-cv32-core', core_id=tid,
+            mtvec_addr=MagiaArch.BOOT_ADDR)
 
         # Instruction cache of the control core (magia_tile_pkg i$ parameters):
         # fully associative 32 x 16 B L0, 32 sets x 32 ways x 16 B L1
