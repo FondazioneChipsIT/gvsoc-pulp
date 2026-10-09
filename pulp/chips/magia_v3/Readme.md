@@ -68,47 +68,40 @@ This installs the `gvrun` executable under `./install/bin/gvrun`.
 
 ## SDK
 
-The companion software SDK for MAGIA v3 is available at:
+The companion software SDK for MAGIA v3 is the `main` branch of:
 
-**https://github.com/FondazioneChipsIT/magia-sdk/tree/lz/magia_v3/pulp_on_magia**
+**https://github.com/pulp-platform/magia-sdk**
 
 ### Building the SDK
 
-Build from the SDK root directory. Choose the configuration that matches your simulation:
+Build from the SDK root directory (the default `target_platform=magia` selects
+the MAGIA v3 tree of gvsoc):
 
-**Spatz + PULP** (full configuration):
 ```bash
-make clean build \
-  target_platform=magia_v3 \
-  tiles=4 \
-  LLVM_INSTALL_DIR=/home/gvsoc/Documents/toolchain/llvm/ \
-  pulp_cores=8
-```
-
-**PULP only** (no Spatz tests):
-```bash
-make clean build \
-  target_platform=magia_v3 \
+make build \
   tiles=4 \
   pulp_cores=8 \
-  spatz_tests=0
-```
-
-**Spatz only** (no PULP tests):
-```bash
-make clean build \
-  target_platform=magia_v3 \
-  tiles=4 \
-  LLVM_INSTALL_DIR=/home/gvsoc/Documents/toolchain/llvm/
+  LLVM_INSTALL_DIR=/path/to/llvm/install
 ```
 
 SDK build parameters:
 
-- **`target_platform`** — must be `magia_v3`
-- **`tiles`** — number of tiles per dimension (e.g. `4` → 4×4 grid)
-- **`pulp_cores`** — number of PULP cores in the cluster (default: 8)
-- **`LLVM_INSTALL_DIR`** — path to LLVM/Clang toolchain, required for Spatz compilation
-- **`spatz_tests=0`** — disable Spatz test compilation
+- **`tiles`** — number of tiles per dimension (e.g. `4` → 4×4 grid); must match `n_tiles_x`/`n_tiles_y` of the gvsoc target
+- **`pulp_cores`** — number of PULP cores per tile (default: 8, `0` builds no PULP test); must match `nb_pulp_cores`
+- **`spatz`** — `0` to build no Spatz test (default: 1)
+- **`LLVM_INSTALL_DIR`** — LLVM/Clang toolchain, required for the Spatz tests
+- **`CMAKE_BUILDDIR`** — build directory (default: `build`)
+- **`profile_cmi`, `profile_cmo`, `profile_cmp`, `profile_snc`** — `1` to emit the profiling sentinels around the iDMA transfers, RedMulE jobs and synchronizations
+
+### Running from the SDK
+
+```bash
+make run platform=gvsoc test=<test_name> tiles=4 pulp_cores=8 \
+  GVSOC_DIR=/path/to/gvsoc
+```
+
+It calls `gvrun` with the target string matching `tiles`/`pulp_cores` and the
+Spatz boot ROM of the build (`build/bin/bootrom/spatz_init.bin`).
 
 ---
 
@@ -117,8 +110,8 @@ SDK build parameters:
 ```bash
 ./install/bin/gvrun \
   --target=magia_v3:n_tiles_x=4,n_tiles_y=4,nb_pulp_cores=8 \
-  --work-dir /home/gvsoc/Documents/test \
-  --param binary=/home/gvsoc/Documents/chips-magia-sdk/build/bin/<test_name> \
+  --work-dir /path/to/workdir \
+  --param binary=/path/to/magia-sdk/build/bin/<test_name> \
   run
 ```
 
@@ -144,8 +137,8 @@ When the binary includes a PULP workload, pass the number of PULP cores via
 ```bash
 ./install/bin/gvrun \
   --target=magia_v3:n_tiles_x=1,n_tiles_y=1,nb_pulp_cores=8 \
-  --work-dir /home/gvsoc/Documents/test \
-  --param binary=/home/gvsoc/Documents/chips-magia-sdk/build/bin/hello_pulp \
+  --work-dir /path/to/workdir \
+  --param binary=/path/to/magia-sdk/build/bin/hello_pulp \
   run
 ```
 
@@ -160,10 +153,10 @@ If **Spatz** is enabled, provide the Spatz boot ROM:
 ```bash
 ./install/bin/gvrun \
   --target=magia_v3:n_tiles_x=4,n_tiles_y=4,nb_pulp_cores=8 \
-  --work-dir /home/gvsoc/Documents/test \
-  --param binary=/home/gvsoc/Documents/chips-magia-sdk/build/bin/<spatz_test> \
+  --work-dir /path/to/workdir \
+  --param binary=/path/to/magia-sdk/build/bin/<spatz_test> \
   run \
-  --attr magia_v3/spatz_romfile=/home/gvsoc/Documents/toolchain/spatz/bootrom/spatz_init.bin
+  --attr magia_v3/spatz_romfile=/path/to/magia-sdk/build/bin/bootrom/spatz_init.bin
 ```
 
 - **`--attr magia_v3/spatz_romfile`** — path to the Snitch-Spatz boot ROM binary. Unlike the mesh knobs, this stays a run-time `--attr`: it is a stim-file path overlaid at run time and never baked into the compiled tree
@@ -177,8 +170,8 @@ Add `--trace-level=trace` and optionally filter by component:
 ```bash
 ./install/bin/gvrun \
   --target=magia_v3:n_tiles_x=1,n_tiles_y=1,nb_pulp_cores=8 \
-  --work-dir /home/gvsoc/Documents/test \
-  --param binary=/home/gvsoc/Documents/chips-magia-sdk/build/bin/hello_pulp \
+  --work-dir /path/to/workdir \
+  --param binary=/path/to/magia-sdk/build/bin/hello_pulp \
   --trace-level=trace \
   run \
   --trace=tile-0-cluster-regs
@@ -231,7 +224,7 @@ make build TARGETS=magia_v3
 ```bash
 ./install/bin/gvrun \
   --target=magia_v3:n_tiles_x=4,n_tiles_y=4,nb_pulp_cores=8 \
-  --work-dir /home/gvsoc/Documents/test \
+  --work-dir /path/to/workdir \
   run
 ```
 
@@ -266,7 +259,7 @@ The QEMU build must support the `vfio-user-pci` device. Launch QEMU from the QEM
   -display none \
   -serial none \
   -monitor tcp:127.0.0.1:45454,server,nowait \
-  -drive id=hd0,file=/home/gvsoc/Documents/toolchain/qemu-img/debian-12-nocloud-amd64.qcow2,format=qcow2,if=none \
+  -drive id=hd0,file=/path/to/debian-12-nocloud-amd64.qcow2,format=qcow2,if=none \
   -device virtio-blk-pci,drive=hd0 \
   -device e1000,netdev=net0 \
   -netdev user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22 \
@@ -385,10 +378,12 @@ and an interrupt taken meanwhile replays it after the handler.
 - The control core reaches the Event Unit on a direct link (RTL
   `core_data_demux_eu_direct`); the Event Unit request drives its machine
   external interrupt (`mei`) and the core acknowledges it (`irq_ack`). Its
-  `mtvec` starts at the boot address (`MagiaArch.BOOT_ADDR`), as the RTL ties
-  `mtvec_addr_i` to `boot_addr_i`.
+  `mtvec` starts at the boot address (`MagiaArch.BOOT_ADDR`, `mtvec_addr` of
+  the core configuration), as the RTL ties `mtvec_addr_i` to `boot_addr_i`:
+  the SDK crt0 relies on it (vector table at the start of the binary).
 - The PULP cores are started by `ClusterRegs` on their `mei` line (bypassing
-  the Event Unit).
+  the Event Unit); the line stays raised until the core acknowledges it
+  (`irq_ack`), as `cluster_start_irq_pending` in the RTL.
 
 Each group of cores has a two-level instruction cache (`icache.py`, built on
 `cache_v4`): one private L0 per core in front of a shared L1.
