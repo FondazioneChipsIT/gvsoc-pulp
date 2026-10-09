@@ -38,6 +38,11 @@ Cv32e40pIrq::Cv32e40pIrq(Iss &iss) : IrqRiscv(iss)
     this->iss.new_slave_port("mtvec_addr", &this->mtvec_addr_itf, (vp::Block *)this);
     this->iss.new_master_port("irq_ack", &this->irq_ack_itf);
 
+    // mtvec base at boot of a chip tying mtvec_addr_i to a constant; the
+    // mtvec_addr port, when driven, overrides it.
+    js::Config *mtvec_conf = iss.get_js_config()->get("mtvec_addr");
+    if (mtvec_conf != NULL) this->mtvec_addr = (uint32_t)mtvec_conf->get_int();
+
     // Take over the lines registered by IrqRiscv, to see them while the core
     // sleeps on a cv.elw.
     this->msi_itf.set_sync_meth(&Cv32e40pIrq::msi_sync);

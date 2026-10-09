@@ -73,7 +73,9 @@ public:
     static void mei_sync(vp::Block *__this, bool value);
     static void external_irq_sync(vp::Block *__this, bool value, int id);
     /* The mtvec_addr wire (RTL mtvec_addr_i) gives the mtvec base at boot,
-     * which the generic reset would take from the boot address. */
+     * which the generic reset would take from the boot address. Until it is
+     * driven, the base is the mtvec_addr property (core config, 0 by
+     * default). */
     static void mtvec_addr_sync(vp::Block *__this, uint32_t value);
 
     /* An ebreak outside debug mode with dcsr.ebreakm=1 (RTL DBG_TAKEN_ID with
