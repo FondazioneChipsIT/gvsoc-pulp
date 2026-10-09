@@ -168,7 +168,9 @@ class MagiaV3Soc(gvsoc.systree.Component):
         # window are whole pages, so a burst always has a single destination.
         # As in the RTL, the routers have input FIFOs of 2 entries (floo_nw_router
         # InFifoDepth) and the chimneys have no cut on the request channels
-        # (ChimneyDefaultCfg CutAx = 0).
+        # (ChimneyDefaultCfg CutAx = 0). Write bursts travel as in floo_nw_chimney
+        # (write_burst_packet): one AW per burst, AW and W beats in one wormhole
+        # packet.
         noc = FlooNocV22dMeshNarrowWide(self,
                                     name='magia-noc',
                                     narrow_width=MagiaArch.BYTES_PER_WORD,
@@ -176,7 +178,8 @@ class MagiaV3Soc(gvsoc.systree.Component):
                                     ni_outstanding_reqs=8, #need to double check this with RTL
                                     router_input_queue_size=2,
                                     dim_x=tree.n_tiles_x+1, dim_y=tree.n_tiles_y,
-                                    max_burst_size=4096, cut_ax=False)
+                                    max_burst_size=4096, cut_ax=False,
+                                    write_burst_packet=True)
 
 
         # Create noc routers

@@ -51,6 +51,9 @@ private:
     void enqueue_router_rsp(FloonocReqV2 *req, bool is_address);
     void send_router_req();
     void unstall();
+    // True when the arbitration can inject a flit (head of the locked queue,
+    // or of any queue when no packet is open).
+    bool has_ready();
 
     NetworkInterfaceV2 &ni;
     // Cycle of the last flit injected, so that at most one is injected per cycle.
@@ -60,7 +63,16 @@ private:
     // of the NI's link output ports it drives.
     int nw;
     vp::Trace trace;
-    std::queue<FloonocReqV2 *> queue;
+    // Flits of the requests (AW/W/AR) and of the responses (R/B) this network
+    // carries, arbitrated by packet in send_router_req (write_burst_packet;
+    // otherwise all flits go to Q_REQ, one FIFO).
+    static constexpr int Q_REQ = 0;
+    static constexpr int Q_RSP = 1;
+    std::queue<FloonocReqV2 *> queues[2];
+    // Queue owning the link until the tail flit of its packet (-1: none), and
+    // the round-robin pointer.
+    int locked = -1;
+    int rr_next = 0;
     bool stalled;
 };
 

@@ -169,6 +169,12 @@ class FloonocNetworkInterfaceV2Config(Config):
         "CutAx: a request is injected into the router the cycle after it "
         "arrives. False injects it in the cycle it arrives (CutAx = 0)"
     ))
+    write_burst_packet: bool = cfg_field(default=False, dump=True, desc=(
+        "Write bursts as in the RTL chimney: one AW per burst, the AW and the W "
+        "beats forming one wormhole packet, requests and responses of a network "
+        "arbitrated by packet, the outstanding limit counting bursts (MaxTxns). "
+        "False sends every write beat as its own burst with its own AW"
+    ))
     mappings: list[FloonocMappingV2] = cfg_field(default_factory=list, init=False, desc=(
         "Memory map: every NI holds the full table"
     ))
@@ -282,9 +288,11 @@ class FlooNocV2MeshFabric:
 
     def __init__(self, container: gvsoc.systree.Component, narrow_width: int, wide_width: int,
             dim_x: int, dim_y: int, ni_outstanding_reqs: int=8, router_input_queue_size: int=2,
-            mappings: dict=None, max_burst_size: int=4096, cut_ax: bool=True):
+            mappings: dict=None, max_burst_size: int=4096, cut_ax: bool=True,
+            write_burst_packet: bool=False):
         self.container = container
         self.cut_ax = cut_ax
+        self.write_burst_packet = write_burst_packet
         self.narrow_width = narrow_width
         self.wide_width = wide_width
         self.dim_x = dim_x
@@ -323,7 +331,8 @@ class FlooNocV2MeshFabric:
         return FloonocNetworkInterfaceV2Config(node_id=xy_node_id(x, y),
             narrow_width=self.narrow_width, wide_width=self.wide_width,
             ni_outstanding_reqs=self.ni_outstanding_reqs,
-            max_burst_size=self.max_burst_size, cut_ax=self.cut_ax)
+            max_burst_size=self.max_burst_size, cut_ax=self.cut_ax,
+            write_burst_packet=self.write_burst_packet)
 
     def _get_tile(self, name: str, x: int, y: int) -> FloonocTileV2:
         tile = self._tiles.get(name)
@@ -561,7 +570,7 @@ class FlooNocV22dMeshNarrowWide(gvsoc.systree.Component):
     """
     def __init__(self, parent: gvsoc.systree.Component, name, narrow_width: int, wide_width:int,
             dim_x: int, dim_y:int, ni_outstanding_reqs: int=8, router_input_queue_size: int=2,
-            max_burst_size: int=4096, cut_ax: bool=True):
+            max_burst_size: int=4096, cut_ax: bool=True, write_burst_packet: bool=False):
         super().__init__(parent, name)
 
         self.add_property('mappings', {})
@@ -581,7 +590,7 @@ class FlooNocV22dMeshNarrowWide(gvsoc.systree.Component):
             ni_outstanding_reqs=ni_outstanding_reqs,
             router_input_queue_size=router_input_queue_size,
             mappings=self.get_property('mappings'), max_burst_size=max_burst_size,
-            cut_ax=cut_ax)
+            cut_ax=cut_ax, write_burst_packet=write_burst_packet)
 
     def __add_mapping(self, name: str, base: int, size: int, x: int, y: int, remove_offset:int =0):
         self._fabric.add_mapping(name, base=base, size=size, x=x, y=y, remove_offset=remove_offset)
