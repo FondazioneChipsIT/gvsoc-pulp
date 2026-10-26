@@ -56,9 +56,12 @@ class MagiaArch:
     L1_ADDR_END             = L1_ADDR_START + L1_SIZE - 1
     L1_TILE_OFFSET          = 0x0010_0000
     L2_ADDR_START           = 0xC000_0000
-    L2_SIZE                 = 0x0CFF_0000 # here in RTL we have 0x4000_0000 but the end address (TEST_END_ADDR_START) then will fall in L2... no sense to me
+    # Default L2 size, overridden by the l2_size target parameter
+    L2_SIZE                 = 0x0CFF_0000
+    L2_MAX_SIZE             = 0xFFFF_0000 - L2_ADDR_START
     L2_ADDR_END             = L2_ADDR_START + L2_SIZE - 1
-    TEST_END_ADDR_START     = L2_ADDR_END + 1
+    # Fixed, as in the RTL and SDK
+    TEST_END_ADDR_START     = 0xCCFF_0000
     TEST_END_SIZE           = 0x400
     STDOUT_ADDR_START       = 0xFFFF_0004
     STDOUT_SIZE             = 0x100
@@ -81,6 +84,8 @@ class MagiaArch:
     SPATZ_BOOTROM_ADDR         = 0x1000_0000
     SPATZ_BOOTROM_SIZE         = 0x100
     SPATZ_ROMFILE              = ''
+    # Default VLEN in bits, as in the RTL (SPATZ_VLEN), overridden by spatz_vlen
+    SPATZ_VLEN                 = 256
 
     # Pulp Cores
     PULP_ENABLE         = True
@@ -129,6 +134,29 @@ class MagiaTree(Tree):
 
         self.nb_clusters = self.n_tiles_x*self.n_tiles_y
 
+        # L2 size in bytes, a multiple of 4 KiB up to L2_MAX_SIZE
+        self.l2_size = TargetParameter(parent, name='l2_size',
+            value=MagiaArch.L2_SIZE, cast=int,
+            description='L2 size in bytes').value
+        if self.l2_size % 4096 != 0 or not 0 < self.l2_size <= MagiaArch.L2_MAX_SIZE:
+            raise RuntimeError(f'l2_size must be a multiple of 4 KiB in '
+                f'(0, {MagiaArch.L2_MAX_SIZE:#x}] (got {self.l2_size:#x})')
+
+        # Design-space knobs: Spatz VLEN and RedMulE array size
+        self.spatz_vlen = TargetParameter(parent, name='spatz_vlen',
+            value=MagiaArch.SPATZ_VLEN, cast=int,
+            description='Spatz VLEN in bits').value
+        self.redmule_h = TargetParameter(parent, name='redmule_h',
+            value=MagiaDSE.REDMULE_H, cast=int,
+            description='RedMulE array height (RTL ARRAY_HEIGHT)').value
+        self.redmule_w = TargetParameter(parent, name='redmule_w',
+            value=MagiaDSE.REDMULE_W, cast=int,
+            description='RedMulE array width (RTL ARRAY_WIDTH)').value
+        for name in ('spatz_vlen', 'redmule_h', 'redmule_w'):
+            v = getattr(self, name)
+            if v <= 0 or v & (v - 1):
+                raise RuntimeError(f'{name} must be a power of two (got {v})')
+
         if MagiaArch.SPATZ_ENABLE:
             self.romfile = Value(self, 'spatz_romfile', MagiaArch.SPATZ_ROMFILE, cast=str,
                 description='Snitch_Spatz rom file')
@@ -171,3 +199,9 @@ class MagiaDSE:
     TILE_IDMA_NUM_AX_IN_FLIGHT  = 16
     TILE_IDMA_BUFFER_DEPTH      = 3
     TILE_IDMA_JOB_FIFO_DEPTH    = 16
+
+    # RedMulE array, as in the RTL (ARRAY_HEIGHT, ARRAY_WIDTH, PIPE_REGS), overridden by
+    # redmule_h and redmule_w
+    REDMULE_H                   = 8
+    REDMULE_W                   = 8
+    REDMULE_PIPE                = 1
