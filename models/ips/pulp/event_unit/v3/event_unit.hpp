@@ -34,6 +34,7 @@ class Mutex_unit;
 // Timing constants
 
 // Cycles required by the core to really wakeup after his clock is back.
+// Default of the wakeup_req_latency property.
 #define EU_WAKEUP_REQ_LATENCY 6
 
 // Cycles needed by the event unit to send back the clock once a core is woken.
@@ -207,6 +208,9 @@ protected:
   Soc_event_unit *soc_event_unit;
 
   int nb_core;
+  // Latency added to the reply of an event wait (EU_WAKEUP_REQ_LATENCY by
+  // default).
+  int wakeup_req_latency;
 
 
   vp::IoReqStatus sw_events_req(vp::IoReq *req, uint64_t offset, bool is_write, uint32_t *data);

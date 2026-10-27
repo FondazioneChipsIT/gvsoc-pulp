@@ -211,7 +211,7 @@ vp::IoReqStatus Core_event_unit::wait_event(vp::IoReq *req, Event_unit_core_stat
 
   // This takes a couple of cycles for the event unit to clock-gate the core
   // before replying, seen as a latency from the core point of view.
-  req->inc_latency(EU_WAKEUP_REQ_LATENCY);
+  req->inc_latency(top->wakeup_req_latency);
 
   // The core always goes to sleep even if the event is already there; this
   // gives much better timing results on barriers (matches the legacy model).

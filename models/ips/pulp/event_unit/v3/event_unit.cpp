@@ -13,6 +13,9 @@ Event_unit::Event_unit(vp::ComponentConf &config)
 : vp::Component(config)
 {
   nb_core = get_js_config()->get_child_int("nb_core");
+  js::Config *wakeup_req_latency_cfg = get_js_config()->get("wakeup_req_latency");
+  wakeup_req_latency = wakeup_req_latency_cfg ? wakeup_req_latency_cfg->get_int()
+                                              : EU_WAKEUP_REQ_LATENCY;
 
   traces.new_trace("trace", &trace, vp::DEBUG);
 

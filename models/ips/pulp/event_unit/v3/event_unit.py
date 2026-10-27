@@ -20,7 +20,7 @@ class EventUnit(Component):
                  nb_mutexes: int = 1, dispatch_size: int = 8, nb_barriers: int = 9,
                  nb_fifo_events: int = 8, fifo_event: int = 27,
                  barrier_event: int = 16, mutex_event: int = 17,
-                 dispatch_event: int = 18):
+                 dispatch_event: int = 18, wakeup_req_latency: int = 6):
         super().__init__(parent, name)
 
         self.add_sources([
@@ -35,6 +35,7 @@ class EventUnit(Component):
         # The C++ model reads these via recursive ("**/") js-config lookups.
         self.add_properties({
             'nb_core': nb_core,
+            'wakeup_req_latency': wakeup_req_latency,
             'properties': {
                 'dispatch':   {'size': dispatch_size},
                 'mutex':      {'nb_mutexes': nb_mutexes},
