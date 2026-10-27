@@ -49,6 +49,10 @@ class SnitchIcacheConfig(Config):
         "in one cycle and the data of the hitting way the next one, instead of "
         "the tags and data of all the ways at once. One more cycle for every "
         "lookup, hit or miss, still one lookup per cycle"))
+    enable_prefetching: bool = cfg_field(default=True, dump=True, desc=(
+        "L0: prefetcher enabled (the enable_prefetching_i input of the RTL, "
+        "tied off by the platform). Without it the L0 only refills its "
+        "misses"))
     cacheable_base: int = cfg_field(default=0, dump=True, desc=(
         "Base of the cacheable window (the PMA of the cluster). The other "
         "fetches are forwarded through the refill port without touching the "
@@ -210,13 +214,16 @@ class SnitchIcacheL0(SnitchIcache):
         Line width in bits (LINE_WIDTH).
     cacheable_base, cacheable_size : int
         Cacheable window (PMA), size 0 for everything cacheable.
+    enable_prefetching : bool
+        Prefetcher enabled (enable_prefetching_i).
     """
 
     def __init__(self, parent: Component, name: str, line_count: int, line_width: int,
-            cacheable_base: int=0, cacheable_size: int=0):
+            cacheable_base: int=0, cacheable_size: int=0, enable_prefetching: bool=True):
         super().__init__(parent, name, config=SnitchIcacheConfig(level=0,
             line_count=line_count, line_width=line_width,
-            cacheable_base=cacheable_base, cacheable_size=cacheable_size))
+            cacheable_base=cacheable_base, cacheable_size=cacheable_size,
+            enable_prefetching=enable_prefetching))
 
 
 class SnitchIcacheL1(SnitchIcache):

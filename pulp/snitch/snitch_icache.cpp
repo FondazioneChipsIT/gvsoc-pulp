@@ -865,8 +865,9 @@ unsigned int SnitchIcache::prefetch_target(cache_line_t *line, unsigned int addr
 
 void SnitchIcache::decide_prefetch(cache_line_t *line, unsigned int addr)
 {
-    // No decision while a refill is pending (demand or prefetch)
-    if (!this->refill_slot_available())
+    // No decision with the prefetcher disabled (enable_prefetching_i) or
+    // while a refill is pending (demand or prefetch)
+    if (!this->cfg.enable_prefetching || !this->refill_slot_available())
     {
         return;
     }
