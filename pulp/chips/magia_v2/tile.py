@@ -18,7 +18,7 @@
 
 import json
 import gvsoc.systree
-import memory.memory as memory
+import pulp.memory.memory as memory
 import interco.router as router
 import gdbserver.gdbserver
 from pulp.stdout.stdout_v3 import Stdout

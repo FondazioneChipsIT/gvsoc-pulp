@@ -1,0 +1,140 @@
+#
+# Copyright (C) 2020 GreenWaves Technologies, SAS, ETH Zurich and University of Bologna
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+from __future__ import annotations
+
+import gvsoc.systree
+
+from memory.memory_config import MemoryConfig
+
+class Memory(gvsoc.systree.Component):
+    """Memory array
+
+    This models a simple memory model.
+    It can be preloaded with initial data.
+    It contains a timing model of a bandwidth, reported through latency.
+    It can support riscv atomics.
+
+    Attributes
+    ----------
+    parent: gvsoc.systree.Component
+        The parent component where this one should be instantiated.
+    name: str
+        The name of the component within the parent space.
+    size: int
+        The size of the memory in bytes.
+    width_log2: int
+        The log2 of the bandwidth to the memory, i.e. the number of bytes it can transfer per cycle.
+        No timing model is applied if it is -1 and the memory is then having an infinite
+        bandwidth.
+    stim_file: str
+        The path to a binary file which should be preloaded at beginning of the memory. The format
+        is a raw binary, and is loaded with an fread.
+    power_trigger: bool
+        True if the memory should trigger power report generation based on dedicated accesses.
+    align: int
+        Specify a required alignment for the allocated memory used for the memory model.
+    atomics: bool
+        True if the memory should support riscv atomics. Since this is slowing down the model, it
+        should be set to True only if needed.
+    latency: int
+        Specify extra latency which will be added to any incoming request.
+    truncate_size: int
+        If non-zero, incoming request addresses are masked with (truncate_size - 1)
+        before accessing the backing array. Lets the caller wrap or fold the incoming
+        address space into the memory. Defaults to 0 (no truncation — addresses are
+        used as-is). truncate_size must be a power of 2 if used.
+    fic_enabled: bool
+        If True, this memory is being fault injected.
+    memfd: str
+        Name of the memfd associated to the memory. Empty string if not used.
+    uma_window_start: int
+        Address at which this memory is mapped in the system (e.g. the MAGIA
+        L2 base). Requests in [uma_window_start, uma_window_start +
+        uma_window_size) are converted to indexes in the memory
+        (addr - uma_window_start).
+    uma_host_base: int
+        Address at which the host (e.g. QEMU) sees offset 0 of the memfd
+        (start of the host RAM), must be <= uma_window_start. The memory maps
+        the memfd from offset (uma_window_start - uma_host_base), i.e. the
+        part the host sees at uma_window_start, so that the host and the
+        memory use the same physical addresses.
+    uma_window_size: int
+        Size of the address window converted as above (normally the memory
+        size). 0 disables the conversion and maps the memfd from offset 0.
+    """
+    def __init__(self, parent: gvsoc.systree.Component, name: str, size: int=0, width_log2: int=-1,
+            stim_file: str=None, power_trigger: bool=False,
+            align: int=0, atomics: bool=False, latency=0, init=True,
+            truncate_size: int=0, fic_enabled=False, memfd: str='',
+            uma_window_start: int=0, uma_host_base: int=0, uma_window_size: int=0,
+            attributes: MemoryConfig | None=None, config: MemoryConfig | None=None):
+
+        if config is not None:
+            attributes = config
+
+        # Always create a MemoryConfig for the compiled tree
+        if attributes is None:
+            attributes = MemoryConfig(size=size, atomics=atomics, latency=latency)
+
+        super().__init__(parent, name, config=attributes)
+
+        self.add_sources(['pulp/memory/memory.cpp'])
+
+        # Since atomics are slowing down the model, this is better to compile the support only
+        # if needed. Note that the framework will take care of compiling this model twice
+        # if both memories with and without atomics are instantiated.
+        if atomics or attributes is not None and attributes.atomics:
+            self.add_c_flags(['-DCONFIG_ATOMICS=1'])
+
+        if fic_enabled:
+            self.add_c_flags(['-DCONFIG_FAULT_INJECTION=1'])
+
+        self.add_properties({
+            'init': init,
+            'size': size if attributes is None else attributes.size,
+            'stim_file': stim_file,
+            'power_trigger': power_trigger,
+            'width_bits': width_log2,
+            'align': align,
+            'latency': latency if attributes is None else attributes.latency,
+            'truncate_size': truncate_size,
+            'fic_enabled': fic_enabled,
+            'memfd': memfd,
+            'uma_window_start': uma_window_start,
+            'uma_host_base': uma_host_base,
+            'uma_window_size': uma_window_size,
+        })
+
+    def i_INPUT(self) -> gvsoc.systree.SlaveItf:
+        """Returns the input port.
+
+        Incoming requests to be handled by the memory should be sent to this port.\n
+        It instantiates a port of type vp::IoSlave.\n
+
+        Returns
+        ----------
+        gvsoc.systree.SlaveItf
+            The slave interface
+        """
+        return gvsoc.systree.SlaveItf(self, 'input', signature='io')
+
+    def gen_gui(self, parent_signal):
+        top = gvsoc.gui.Signal(self, parent_signal, name=self.name, path="req_addr",
+            groups=['regmap', 'memory', 'active'])
+
+        gvsoc.gui.Signal(self, top, "req_size", path="req_size", groups=['regmap'])
+        gvsoc.gui.Signal(self, top, "req_is_write", path="req_is_write", groups=['regmap'])
