@@ -17,7 +17,7 @@
 # Authors: Lorenzo Zuolo, Chips-IT (lorenzo.zuolo@chips.it)
 
 import gvsoc.systree
-import memory.memory as memory
+import pulp.memory.memory as memory
 import vp.clock_domain
 import utils.loader.loader
 
@@ -75,7 +75,10 @@ class MagiaV2Soc(gvsoc.systree.Component):
         for id in range(0,tree.nb_clusters):
             cluster.append(MagiaV2Tile(self, f'magia-tile-{id}', tree, parser, id))
 
-        l2_mem = memory.Memory(self, f'L2-mem', size=MagiaArch.L2_SIZE,latency=MagiaDSE.SOC_L2_LATENCY)
+        l2_mem = memory.Memory(self, f'L2-mem', size=MagiaArch.L2_SIZE,latency=MagiaDSE.SOC_L2_LATENCY, memfd='/tmp/magia_uma',
+                               uma_window_start=MagiaArch.L2_ADDR_START,
+                               uma_window_size=MagiaArch.UMA_WINDOW_SIZE,
+                               uma_host_base=MagiaArch.UMA_HOST_ADDR_START)
 
         if MagiaArch.ENABLE_PCIE_VFIO:
             pcie_ep = pulp.pcie_vfio_bridge.pcie_vfio_mem_bridge.PCIeVfioMemBridge(
@@ -218,7 +221,7 @@ class MagiaV2Soc(gvsoc.systree.Component):
             noc.o_NARROW_BIND(l2_mem.i_INPUT(), x=0, y=y)
             noc.o_WIDE_BIND(l2_mem.i_INPUT(), x=0, y=y)
         
-        noc.o_MAP_DIR(base=MagiaArch.L2_ADDR_START,size=MagiaArch.L2_SIZE, dir=FlooNocDirection.LEFT,name=f'mem_left', rm_base=True)
+        noc.o_MAP_DIR(base=MagiaArch.L2_ADDR_START,size=MagiaArch.L2_SIZE, dir=FlooNocDirection.LEFT,name=f'mem_left', rm_base=False)
 
         if MagiaArch.ENABLE_PCIE_VFIO:
             pcie_ep.o_MEM(l2_mem.i_INPUT())
