@@ -125,7 +125,8 @@ private:
     // - uma_window_start: address at which this memory is mapped in the
     //   system (e.g. the MAGIA L2 base, 0xC0000000);
     // - uma_host_base: address at which the host (e.g. QEMU/RTEMS) sees
-    //   offset 0 of the memfd (start of the host RAM, e.g. 0x80000000);
+    //   offset 0 of the memfd (start of the host RAM, e.g. 0xA0000000 on
+    //   the QEMU cheshire machine);
     // - uma_window_size: size of the converted window
     //   [uma_window_start, +uma_window_size), 0 disables the conversion and
     //   maps the memfd from offset 0.
@@ -232,7 +233,7 @@ log_is_write(*this, "req_is_write", 1, vp::SignalCommon::ResetKind::HighZ)
     }
     if (this->uma_window_size > 0)
     {
-        printf("UMA L2 window [0x%lx, 0x%lx), host RAM base 0x%lx\n",
+        this->trace.msg("UMA L2 window [0x%lx, 0x%lx), host RAM base 0x%lx\n",
             (unsigned long)this->uma_window_start,
             (unsigned long)(this->uma_window_start + this->uma_window_size),
             (unsigned long)this->uma_host_base);
@@ -251,17 +252,17 @@ log_is_write(*this, "req_is_write", 1, vp::SignalCommon::ResetKind::HighZ)
     uint8_t* uma_mem_data=NULL;
     if(!this->memfd.empty())
     {
-        printf("Building UMA Memory (size: 0x%x, check: %d) memfd %s\n", this->cfg.size, check, this->memfd.c_str());
+        this->trace.msg("Building UMA Memory (size: 0x%x, check: %d) memfd %s\n", this->cfg.size, check, this->memfd.c_str());
         umaFd = open(this->memfd.c_str(), O_RDWR);
         if (umaFd < 0)
         {
             this->trace.fatal("Unable to open UMA memfd %s: %s\n", this->memfd.c_str(), strerror(errno));
             return;
         }
-        printf("Opened umaFd=%d\n", umaFd);
+        this->trace.msg("Opened umaFd=%d\n", umaFd);
 
-        // The memfd is the host RAM, offset 0 = uma_host_base (e.g. QEMU
-        // 0x80000000). Map the part the host sees at the L2 base, so that the
+        // The memfd is the host RAM, offset 0 = uma_host_base (e.g. QEMU cheshire
+        // 0xA0000000). Map the part the host sees at the L2 base, so that the
         // same physical address is used on both sides:
         //   memfd offset (uma_window_start - uma_host_base) + x
         //     = host uma_window_start + x = L2 uma_window_start + x
@@ -283,7 +284,7 @@ log_is_write(*this, "req_is_write", 1, vp::SignalCommon::ResetKind::HighZ)
                 (unsigned long)(this->uma_host_base + memfd_offset + this->cfg.size));
             return;
         }
-        printf("UMA memfd offset 0x%lx (host address 0x%lx) -> L2 0x%lx\n",
+        this->trace.msg("UMA memfd offset 0x%lx (host address 0x%lx) -> L2 0x%lx\n",
             (unsigned long)memfd_offset,
             (unsigned long)(this->uma_host_base + memfd_offset),
             (unsigned long)this->uma_window_start);
@@ -303,7 +304,7 @@ log_is_write(*this, "req_is_write", 1, vp::SignalCommon::ResetKind::HighZ)
     }
     else
     {
-        //printf("Building UMA Memory (size: 0x%x, check: %d)\n", this->cfg.size, check);
+        //Do nothing
     }
 
     if (align)
