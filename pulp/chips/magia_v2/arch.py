@@ -54,7 +54,9 @@ class MagiaArch:
     # UMA_HOST_ADDR_START), so MAGIA and the host use the same physical
     # addresses for the L2 (see pulp/memory/memory.cpp). The host RAM must
     # therefore cover L2_ADDR_START + L2_SIZE (e.g. QEMU -m 2G).
-    UMA_HOST_ADDR_START     = 0x8000_0000
+    # Must match the DRAM base of the QEMU cheshire machine
+    # (CHESHIRE_DRAM in qemu/hw/riscv/cheshire.c), RTEMS is linked there too.
+    UMA_HOST_ADDR_START     = 0xA000_0000
     UMA_WINDOW_SIZE         = L2_SIZE
     TEST_END_ADDR_START     = L2_ADDR_END + 1
     TEST_END_SIZE           = 0x400
