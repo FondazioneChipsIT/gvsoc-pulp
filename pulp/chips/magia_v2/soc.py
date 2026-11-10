@@ -69,7 +69,10 @@ class MagiaV2Soc(gvsoc.systree.Component):
         # Fetch enable module
         fetch_enabler=FetchEnableModule(self,'fetch-module',fetch_en_addr_base=MagiaArch.FETCH_ENABLE_ADDR_START,fetch_en_addr_size=MagiaArch.FETCH_ENABLE_SIZE,
                                         poll_period=MagiaArch.FETCH_ENABLE_POLL_PERIOD,
-                                        poll_sleep_us=MagiaArch.FETCH_ENABLE_POLL_SLEEP_US)
+                                        poll_sleep_us=MagiaArch.FETCH_ENABLE_POLL_SLEEP_US,
+                                        # Maps the fetch enable word from the host RAM; not used with the PCIe bridge
+                                        memfd='' if MagiaArch.ENABLE_PCIE_VFIO else MagiaArch.UMA_MEMFD_PATH,
+                                        uma_host_base=MagiaArch.UMA_HOST_ADDR_START)
 
         # Single clock domain
         clock = vp.clock_domain.Clock_domain(self, 'tile-clock',
@@ -81,7 +84,12 @@ class MagiaV2Soc(gvsoc.systree.Component):
         for id in range(0,tree.nb_clusters):
             cluster.append(MagiaV2Tile(self, f'magia-tile-{id}', tree, parser, id))
 
-        l2_mem = memory.Memory(self, f'L2-mem', size=MagiaArch.UMA_WINDOW_SIZE,latency=MagiaDSE.SOC_L2_LATENCY, memfd='/tmp/magia_uma',
+        # UMA: the L2 is backed by the host RAM memfd. With the PCIe bridge the host
+        # reaches the L2 through DMA, so the L2 is a private memory (no memfd). The UMA
+        # window is kept in both cases: it converts the absolute L2 addresses (NoC with
+        # rm_base=False, bridge DMA) into memory offsets.
+        l2_mem = memory.Memory(self, f'L2-mem', size=MagiaArch.L2_SIZE,latency=MagiaDSE.SOC_L2_LATENCY,
+                               memfd='' if MagiaArch.ENABLE_PCIE_VFIO else MagiaArch.UMA_MEMFD_PATH,
                                uma_window_start=MagiaArch.L2_ADDR_START,
                                uma_window_size=MagiaArch.UMA_WINDOW_SIZE,
                                uma_host_base=MagiaArch.UMA_HOST_ADDR_START)
@@ -429,6 +437,3 @@ class MagiaV2Soc(gvsoc.systree.Component):
                 fetch_enabler.o_FETCH_ENABLE(cluster[id].i_FETCHEN())
                 loader.o_ENTRY(cluster[id].i_ENTRY())
 
-        # The fetch enable module polls the fetch enable word in the L2 (written by the host)
-        if not MagiaArch.ENABLE_PCIE_VFIO:
-            fetch_enabler.o_MEM(l2_mem.i_INPUT())

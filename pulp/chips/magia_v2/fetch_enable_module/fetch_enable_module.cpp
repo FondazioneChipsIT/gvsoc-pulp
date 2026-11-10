@@ -22,10 +22,15 @@
  * Fetch enable module.
  *
  * The host (QEMU) cannot generate GVSoC requests: it only writes the shared
- * memory (UMA memfd). So, once out of reset, this module polls a word of the
- * L2 (fetch_en_addr_base) through its "mem" port every poll_period cycles.
- * When the word contains fetch_en_pattern, it raises fetch enable on all the
- * bound cores and stops polling.
+ * memory (UMA memfd). So the module maps by itself, from the memfd, only the
+ * page holding the fetch enable word (fetch_en_addr_base) and, once out of
+ * reset, reads it every poll_period cycles. When the word contains
+ * fetch_en_pattern, it raises fetch enable on all the bound cores and stops
+ * polling. The L2 memory therefore only needs to map the L2 itself.
+ *
+ * The memfd offset of the word is fetch_en_addr_base - uma_host_base (host
+ * address of memfd offset 0). Without memfd (e.g. PCIe VFIO mode) the module
+ * does not poll.
  *
  * A write to the "input" port (from a GVSoC master) still sets the fetch
  * enable directly.
@@ -36,7 +41,12 @@
 #include <vp/itf/wire.hpp>
 #include <stdio.h>
 #include <string.h>
+#include <string>
 #include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 
 class FetchEnableModule : public vp::Component
 {
@@ -46,24 +56,22 @@ public:
   FetchEnableModule(vp::ComponentConf &config);
 
   void reset(bool active) override;
+  void stop() override;
 
   static vp::IoReqStatus req(vp::Block *__this, vp::IoReq *req);
 
 private:
 
   static void poll_handler(vp::Block *__this, vp::ClockEvent *event);
-  static void mem_response(vp::Block *__this, vp::IoReq *req);
+  void map_fetch_enable_word();
   void check_value(uint32_t value);
   void set_fetch_enable(bool active);
 
   vp::Trace     trace;
   vp::IoSlave in;
-  vp::IoMaster mem_itf;
   vp::WireMaster<bool> fetch_enable_itf;
 
   vp::ClockEvent *poll_event;
-  vp::IoReq poll_req;
-  uint32_t poll_data;
 
   uint64_t fetch_en_base_address;
   uint64_t fetch_en_addr_size;
@@ -72,6 +80,13 @@ private:
   int64_t poll_sleep_us;
   bool enabled;
   int64_t nb_polls;
+
+  std::string memfd;
+  uint64_t uma_host_base;
+  // Mapping of the page(s) holding the fetch enable word, released in stop()
+  uint8_t *map_base = NULL;
+  size_t map_size = 0;
+  volatile uint32_t *fetch_en_word = NULL;
 };
 
 FetchEnableModule::FetchEnableModule(vp::ComponentConf &config)
@@ -81,9 +96,6 @@ FetchEnableModule::FetchEnableModule(vp::ComponentConf &config)
   this->in.set_req_meth(&FetchEnableModule::req);
   this->new_slave_port("input", &this->in, this);
   this->new_master_port("fetch_en", &this->fetch_enable_itf);
-
-  this->mem_itf.set_resp_meth(&FetchEnableModule::mem_response);
-  this->new_master_port("mem", &this->mem_itf);
 
   this->poll_event = this->event_new(&FetchEnableModule::poll_handler);
 
@@ -96,9 +108,92 @@ FetchEnableModule::FetchEnableModule(vp::ComponentConf &config)
     this->poll_period = 1;
   }
   this->poll_sleep_us = get_js_config()->get("poll_sleep_us")->get_int();
+  this->memfd = get_js_config()->get_child_str("memfd");
+  this->uma_host_base = get_js_config()->get_uint("uma_host_base");
 
   this->enabled = false;
   this->nb_polls = 0;
+
+  if (!this->memfd.empty())
+  {
+    this->map_fetch_enable_word();
+  }
+}
+
+void FetchEnableModule::map_fetch_enable_word()
+{
+  if (this->fetch_en_addr_size < sizeof(uint32_t))
+  {
+    this->trace.fatal("Fetch enable area too small (size: 0x%lx, needed: 0x%lx)\n",
+      (unsigned long)this->fetch_en_addr_size, (unsigned long)sizeof(uint32_t));
+    return;
+  }
+  if (this->fetch_en_base_address & (sizeof(uint32_t) - 1))
+  {
+    this->trace.fatal("Fetch enable word not 32-bit aligned (addr: 0x%lx)\n",
+      (unsigned long)this->fetch_en_base_address);
+    return;
+  }
+  if (this->fetch_en_base_address < this->uma_host_base)
+  {
+    this->trace.fatal("Fetch enable word (0x%lx) below the host RAM base (0x%lx)\n",
+      (unsigned long)this->fetch_en_base_address, (unsigned long)this->uma_host_base);
+    return;
+  }
+
+  int fd = open(this->memfd.c_str(), O_RDWR);
+  if (fd < 0)
+  {
+    this->trace.fatal("Unable to open UMA memfd %s: %s\n", this->memfd.c_str(), strerror(errno));
+    return;
+  }
+
+  // mmap() needs a page-aligned offset: map the pages covering the word
+  uint64_t word_offset = this->fetch_en_base_address - this->uma_host_base;
+  uint64_t page_size = (uint64_t)sysconf(_SC_PAGESIZE);
+  uint64_t map_offset = word_offset & ~(page_size - 1);
+  uint64_t map_end = word_offset + sizeof(uint32_t);
+  this->map_size = (size_t)(((map_end - map_offset) + page_size - 1) & ~(page_size - 1));
+
+  struct stat st;
+  if (fstat(fd, &st) == 0 && (uint64_t)st.st_size < map_end)
+  {
+    close(fd);
+    this->trace.fatal("UMA memfd %s too small (size: 0x%lx, needed: 0x%lx): "
+      "the host RAM must cover 0x%lx\n",
+      this->memfd.c_str(), (unsigned long)st.st_size, (unsigned long)map_end,
+      (unsigned long)this->fetch_en_base_address);
+    return;
+  }
+
+  void *ptr = mmap(NULL, this->map_size, PROT_READ, MAP_SHARED, fd, (off_t)map_offset);
+  int mmap_errno = errno;
+  // The mapping keeps its own reference to the memfd
+  close(fd);
+  if (ptr == MAP_FAILED)
+  {
+    this->trace.fatal("Unable to mmap UMA memfd %s (offset: 0x%lx, size: 0x%lx): %s\n",
+      this->memfd.c_str(), (unsigned long)map_offset, (unsigned long)this->map_size,
+      strerror(mmap_errno));
+    return;
+  }
+
+  this->map_base = (uint8_t *)ptr;
+  this->fetch_en_word = (volatile uint32_t *)(this->map_base + (word_offset - map_offset));
+  this->trace.msg(vp::Trace::LEVEL_INFO,
+    "Mapped fetch enable word 0x%lx (memfd %s offset 0x%lx, page 0x%lx size 0x%lx)\n",
+    (unsigned long)this->fetch_en_base_address, this->memfd.c_str(),
+    (unsigned long)word_offset, (unsigned long)map_offset, (unsigned long)this->map_size);
+}
+
+void FetchEnableModule::stop()
+{
+  if (this->map_base != NULL)
+  {
+    munmap(this->map_base, this->map_size);
+    this->map_base = NULL;
+    this->fetch_en_word = NULL;
+  }
 }
 
 void FetchEnableModule::reset(bool active)
@@ -112,7 +207,7 @@ void FetchEnableModule::reset(bool active)
       this->event_cancel(this->poll_event);
     }
   }
-  else if (this->mem_itf.is_bound())
+  else if (this->fetch_en_word != NULL)
   {
     this->trace.msg(vp::Trace::LEVEL_INFO,
       "Polling fetch enable word (addr: 0x%lx, pattern: 0x%08x, period: %ld cycles, sleep: %ld us)\n",
@@ -159,35 +254,14 @@ void FetchEnableModule::poll_handler(vp::Block *__this, vp::ClockEvent *event)
 {
   FetchEnableModule *_this = (FetchEnableModule *)__this;
 
-  if (_this->enabled)
+  if (_this->enabled || _this->fetch_en_word == NULL)
   {
     return;
   }
 
-  _this->poll_data = 0;
-  _this->poll_req.init();
-  _this->poll_req.set_addr(_this->fetch_en_base_address);
-  _this->poll_req.set_size(sizeof(uint32_t));
-  _this->poll_req.set_is_write(false);
-  _this->poll_req.set_data((uint8_t *)&_this->poll_data);
-
-  vp::IoReqStatus err = _this->mem_itf.req(&_this->poll_req);
-  if (err == vp::IO_REQ_OK)
-  {
-    _this->check_value(_this->poll_data);
-  }
-  else if (err == vp::IO_REQ_INVALID)
-  {
-    _this->trace.force_warning("Invalid access while polling fetch enable word (addr: 0x%lx)\n",
-      _this->fetch_en_base_address);
-  }
-  // IO_REQ_PENDING: the value is checked in mem_response
-}
-
-void FetchEnableModule::mem_response(vp::Block *__this, vp::IoReq *req)
-{
-  FetchEnableModule *_this = (FetchEnableModule *)__this;
-  _this->check_value(_this->poll_data);
+  // The word is written by another process (QEMU): acquire load from the shared mapping
+  uint32_t value = __atomic_load_n((uint32_t *)_this->fetch_en_word, __ATOMIC_ACQUIRE);
+  _this->check_value(value);
 }
 
 vp::IoReqStatus FetchEnableModule::req(vp::Block *__this, vp::IoReq *req)

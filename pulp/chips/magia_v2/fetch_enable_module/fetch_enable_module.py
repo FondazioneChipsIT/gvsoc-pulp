@@ -27,11 +27,18 @@ class FetchEnableModule(gvsoc.systree.Component):
                 fetch_en_addr_size: int,
                 fetch_en_pattern: int = 0xFFFFFFFF,
                 poll_period: int = 1000,
-                poll_sleep_us: int = 1000):
+                poll_sleep_us: int = 1000,
+                memfd: str = '',
+                uma_host_base: int = 0):
         """fetch_en_pattern: value that enables the fetch when read at fetch_en_addr_base.
-        poll_period: cycles between two reads of the fetch enable word (through o_MEM).
+        poll_period: cycles between two reads of the fetch enable word.
         poll_sleep_us: wall-clock pause after each unsuccessful read (0 = none), bounds
-        the number of reads while the host boots."""
+        the number of reads while the host boots.
+        memfd: shared memory file (host RAM, e.g. /tmp/magia_uma). When set, the module
+        maps by itself only the page holding the fetch enable word and polls it.
+        Empty disables the polling (e.g. PCIe VFIO mode).
+        uma_host_base: host address of memfd offset 0 (e.g. 0xA000_0000), the word is
+        at memfd offset fetch_en_addr_base - uma_host_base."""
 
         super().__init__(parent, name)
 
@@ -41,16 +48,14 @@ class FetchEnableModule(gvsoc.systree.Component):
             'fetch_en_pattern' : fetch_en_pattern,
             'poll_period' : poll_period,
             'poll_sleep_us' : poll_sleep_us,
+            'memfd' : memfd,
+            'uma_host_base' : uma_host_base,
         })
 
         self.add_sources(['pulp/chips/magia_v2/fetch_enable_module/fetch_enable_module.cpp'])
 
     def i_INPUT(self) -> gvsoc.systree.SlaveItf:
         return gvsoc.systree.SlaveItf(self, 'input', signature='io')
-
-    def o_MEM(self, itf: gvsoc.systree.SlaveItf):
-        """Memory polled for the fetch enable word (L2, shared with the host)."""
-        self.itf_bind('mem', itf, signature='io')
 
     def o_FETCH_ENABLE(self, itf: gvsoc.systree.SlaveItf):
         self.itf_bind('fetch_en', itf, signature='wire<bool>')
