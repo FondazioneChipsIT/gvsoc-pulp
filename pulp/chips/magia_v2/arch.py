@@ -48,6 +48,15 @@ class MagiaArch:
     L2_ADDR_START           = 0xC000_0000
     L2_SIZE                 = 0x0CFE_FFFF # here in RTL we have 0x4000_0000 but the end address (TEST_END_ADDR_START) then will fall in L2... no sense to me
     L2_ADDR_END             = L2_ADDR_START + L2_SIZE
+    TEST_END_ADDR_START     = L2_ADDR_END + 1
+    TEST_END_SIZE           = 0x400
+    FETCH_ENABLE_SIZE       = 0x4
+    # Fetch enable address after test end address
+    FETCH_ENABLE_ADDR_START = TEST_END_ADDR_START + TEST_END_SIZE
+    # Cycles between two reads of the fetch enable word (each read is an L2 access)
+    FETCH_ENABLE_POLL_PERIOD = 1000
+    # Wall-clock pause after each unsuccessful read: ~1000 reads per real second
+    FETCH_ENABLE_POLL_SLEEP_US = 1000
     # UMA: the shared memfd is the host RAM (QEMU/RTEMS), whose offset 0 is at
     # UMA_HOST_ADDR_START. The L2 memory maps the part of the memfd that the
     # host sees at L2_ADDR_START (memfd offset L2_ADDR_START -
@@ -57,16 +66,8 @@ class MagiaArch:
     # Must match the DRAM base of the QEMU cheshire machine
     # (CHESHIRE_DRAM in qemu/hw/riscv/cheshire.c), RTEMS is linked there too.
     UMA_HOST_ADDR_START     = 0xA000_0000
-    UMA_WINDOW_SIZE         = L2_SIZE
-    TEST_END_ADDR_START     = L2_ADDR_END + 1
-    TEST_END_SIZE           = 0x400
-    FETCH_ENABLE_SIZE       = 0x4
-    # Last aligned 32-bit word of the L2 (inside the UMA window, shared with the host)
-    FETCH_ENABLE_ADDR_START = (L2_ADDR_END - FETCH_ENABLE_SIZE) & ~(FETCH_ENABLE_SIZE - 1)
-    # Cycles between two reads of the fetch enable word (each read is an L2 access)
-    FETCH_ENABLE_POLL_PERIOD = 1000
-    # Wall-clock pause after each unsuccessful read: ~1000 reads per real second
-    FETCH_ENABLE_POLL_SLEEP_US = 1000
+    # Up to the end of the fetch enable word (L2 + test end + fetch enable)
+    UMA_WINDOW_SIZE         = FETCH_ENABLE_ADDR_START + FETCH_ENABLE_SIZE - L2_ADDR_START
     STDOUT_ADDR_START       = 0xFFFF_0004
     STDOUT_SIZE             = 0x100
 
