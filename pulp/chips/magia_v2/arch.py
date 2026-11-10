@@ -66,8 +66,11 @@ class MagiaArch:
     # Must match the DRAM base of the QEMU cheshire machine
     # (CHESHIRE_DRAM in qemu/hw/riscv/cheshire.c), RTEMS is linked there too.
     UMA_HOST_ADDR_START     = 0xA000_0000
-    # Up to the end of the fetch enable word (L2 + test end + fetch enable)
-    UMA_WINDOW_SIZE         = FETCH_ENABLE_ADDR_START + FETCH_ENABLE_SIZE - L2_ADDR_START
+    # The L2 memory maps only the L2: the fetch enable module maps the fetch
+    # enable word by itself from the same memfd
+    UMA_WINDOW_SIZE         = L2_SIZE
+    # Shared memory file (host RAM), created by the launcher
+    UMA_MEMFD_PATH          = '/tmp/magia_uma'
     STDOUT_ADDR_START       = 0xFFFF_0004
     STDOUT_SIZE             = 0x100
 
