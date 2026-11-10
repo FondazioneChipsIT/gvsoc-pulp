@@ -29,6 +29,7 @@ if MagiaArch.ENABLE_PCIE_VFIO:
 from pulp.floonoc.floonoc import *
 from pulp.chips.magia_v2.fractal_sync.fractal_sync import *
 from pulp.chips.magia_v2.kill_module.kill_module import *
+from pulp.chips.magia_v2.fetch_enable_module.fetch_enable_module import *
 from typing import List, Dict
 import math
 
@@ -64,6 +65,11 @@ class MagiaV2Soc(gvsoc.systree.Component):
         # Simulation engine killer
         killer=KillModule(self,'kill-module',kill_addr_base=MagiaArch.TEST_END_ADDR_START,kill_addr_size=MagiaArch.TEST_END_SIZE,nb_cores_to_wait=tree.nb_clusters,
                           done_irq_enable=MagiaArch.ENABLE_PCIE_VFIO)
+                          
+        # Fetch enable module
+        fetch_enabler=FetchEnableModule(self,'fetch-module',fetch_en_addr_base=MagiaArch.FETCH_ENABLE_ADDR_START,fetch_en_addr_size=MagiaArch.FETCH_ENABLE_SIZE,
+                                        poll_period=MagiaArch.FETCH_ENABLE_POLL_PERIOD,
+                                        poll_sleep_us=MagiaArch.FETCH_ENABLE_POLL_SLEEP_US)
 
         # Single clock domain
         clock = vp.clock_domain.Clock_domain(self, 'tile-clock',
@@ -419,5 +425,10 @@ class MagiaV2Soc(gvsoc.systree.Component):
             else:
                 if (id == 0):
                     loader.o_OUT(cluster[id].i_LOADER()) #only cluster connected to the corner loads the elf
-                loader.o_START(cluster[id].i_FETCHEN())
+                #loader.o_START(cluster[id].i_FETCHEN())
+                fetch_enabler.o_FETCH_ENABLE(cluster[id].i_FETCHEN())
                 loader.o_ENTRY(cluster[id].i_ENTRY())
+
+        # The fetch enable module polls the fetch enable word in the L2 (written by the host)
+        if not MagiaArch.ENABLE_PCIE_VFIO:
+            fetch_enabler.o_MEM(l2_mem.i_INPUT())

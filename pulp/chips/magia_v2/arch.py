@@ -60,6 +60,13 @@ class MagiaArch:
     UMA_WINDOW_SIZE         = L2_SIZE
     TEST_END_ADDR_START     = L2_ADDR_END + 1
     TEST_END_SIZE           = 0x400
+    FETCH_ENABLE_SIZE       = 0x4
+    # Last aligned 32-bit word of the L2 (inside the UMA window, shared with the host)
+    FETCH_ENABLE_ADDR_START = (L2_ADDR_END - FETCH_ENABLE_SIZE) & ~(FETCH_ENABLE_SIZE - 1)
+    # Cycles between two reads of the fetch enable word (each read is an L2 access)
+    FETCH_ENABLE_POLL_PERIOD = 1000
+    # Wall-clock pause after each unsuccessful read: ~1000 reads per real second
+    FETCH_ENABLE_POLL_SLEEP_US = 1000
     STDOUT_ADDR_START       = 0xFFFF_0004
     STDOUT_SIZE             = 0x100
 
