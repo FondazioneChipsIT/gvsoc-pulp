@@ -81,7 +81,7 @@ class MagiaV2Soc(gvsoc.systree.Component):
         for id in range(0,tree.nb_clusters):
             cluster.append(MagiaV2Tile(self, f'magia-tile-{id}', tree, parser, id))
 
-        l2_mem = memory.Memory(self, f'L2-mem', size=MagiaArch.L2_SIZE,latency=MagiaDSE.SOC_L2_LATENCY, memfd='/tmp/magia_uma',
+        l2_mem = memory.Memory(self, f'L2-mem', size=MagiaArch.UMA_WINDOW_SIZE,latency=MagiaDSE.SOC_L2_LATENCY, memfd='/tmp/magia_uma',
                                uma_window_start=MagiaArch.L2_ADDR_START,
                                uma_window_size=MagiaArch.UMA_WINDOW_SIZE,
                                uma_host_base=MagiaArch.UMA_HOST_ADDR_START)
