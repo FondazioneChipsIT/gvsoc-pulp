@@ -29,7 +29,8 @@ class FetchEnableModule(gvsoc.systree.Component):
                 poll_period: int = 1000,
                 poll_sleep_us: int = 1000,
                 memfd: str = '',
-                uma_host_base: int = 0):
+                uma_host_base: int = 0,
+                entry_addr: int = 0):
         """fetch_en_pattern: value that enables the fetch when read at fetch_en_addr_base.
         poll_period: cycles between two reads of the fetch enable word.
         poll_sleep_us: wall-clock pause after each unsuccessful read (0 = none), bounds
@@ -38,7 +39,11 @@ class FetchEnableModule(gvsoc.systree.Component):
         maps by itself only the page holding the fetch enable word and polls it.
         Empty disables the polling (e.g. PCIe VFIO mode).
         uma_host_base: host address of memfd offset 0 (e.g. 0xA000_0000), the word is
-        at memfd offset fetch_en_addr_base - uma_host_base."""
+        at memfd offset fetch_en_addr_base - uma_host_base.
+        entry_addr: host address of a 32-bit word holding the entry point, written by the
+        host before the fetch enable pattern. When not 0, the module reads it once the
+        pattern is found and sends it on the entry port (o_ENTRY) before raising fetch
+        enable. 0 disables it (entry provided by someone else, e.g. the ELF loader)."""
 
         super().__init__(parent, name)
 
@@ -50,6 +55,7 @@ class FetchEnableModule(gvsoc.systree.Component):
             'poll_sleep_us' : poll_sleep_us,
             'memfd' : memfd,
             'uma_host_base' : uma_host_base,
+            'entry_addr' : entry_addr,
         })
 
         self.add_sources(['pulp/chips/magia_v2/fetch_enable_module/fetch_enable_module.cpp'])
@@ -59,3 +65,6 @@ class FetchEnableModule(gvsoc.systree.Component):
 
     def o_FETCH_ENABLE(self, itf: gvsoc.systree.SlaveItf):
         self.itf_bind('fetch_en', itf, signature='wire<bool>')
+
+    def o_ENTRY(self, itf: gvsoc.systree.SlaveItf):
+        self.itf_bind('entry', itf, signature='wire<uint64_t>')

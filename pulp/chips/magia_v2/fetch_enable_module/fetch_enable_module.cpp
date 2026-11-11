@@ -32,6 +32,12 @@
  * address of memfd offset 0). Without memfd (e.g. PCIe VFIO mode) the module
  * does not poll.
  *
+ * Entry point from the host: when entry_addr is not 0, the module also maps
+ * the 32-bit word at entry_addr (written by the host before the fetch enable
+ * pattern). When the pattern is found, it reads that word and sends it on the
+ * "entry" port (core boot address) before raising fetch enable, since the
+ * cores take the boot address as PC on the fetch enable rising edge.
+ *
  * A write to the "input" port (from a GVSoC master) still sets the fetch
  * enable directly.
  */
@@ -70,6 +76,7 @@ private:
   vp::Trace     trace;
   vp::IoSlave in;
   vp::WireMaster<bool> fetch_enable_itf;
+  vp::WireMaster<uint64_t> entry_itf;
 
   vp::ClockEvent *poll_event;
 
@@ -83,10 +90,13 @@ private:
 
   std::string memfd;
   uint64_t uma_host_base;
+  // Host address of the entry word, 0 if the entry does not come from the host
+  uint64_t entry_addr;
   // Mapping of the page(s) holding the fetch enable word, released in stop()
   uint8_t *map_base = NULL;
   size_t map_size = 0;
   volatile uint32_t *fetch_en_word = NULL;
+  volatile uint32_t *entry_word = NULL;
 };
 
 FetchEnableModule::FetchEnableModule(vp::ComponentConf &config)
@@ -96,6 +106,7 @@ FetchEnableModule::FetchEnableModule(vp::ComponentConf &config)
   this->in.set_req_meth(&FetchEnableModule::req);
   this->new_slave_port("input", &this->in, this);
   this->new_master_port("fetch_en", &this->fetch_enable_itf);
+  this->new_master_port("entry", &this->entry_itf);
 
   this->poll_event = this->event_new(&FetchEnableModule::poll_handler);
 
@@ -110,6 +121,7 @@ FetchEnableModule::FetchEnableModule(vp::ComponentConf &config)
   this->poll_sleep_us = get_js_config()->get("poll_sleep_us")->get_int();
   this->memfd = get_js_config()->get_child_str("memfd");
   this->uma_host_base = get_js_config()->get_uint("uma_host_base");
+  this->entry_addr = get_js_config()->get_uint("entry_addr");
 
   this->enabled = false;
   this->nb_polls = 0;
@@ -140,6 +152,21 @@ void FetchEnableModule::map_fetch_enable_word()
       (unsigned long)this->fetch_en_base_address, (unsigned long)this->uma_host_base);
     return;
   }
+  if (this->entry_addr != 0)
+  {
+    if (this->entry_addr & (sizeof(uint32_t) - 1))
+    {
+      this->trace.fatal("Entry word not 32-bit aligned (addr: 0x%lx)\n",
+        (unsigned long)this->entry_addr);
+      return;
+    }
+    if (this->entry_addr < this->uma_host_base)
+    {
+      this->trace.fatal("Entry word (0x%lx) below the host RAM base (0x%lx)\n",
+        (unsigned long)this->entry_addr, (unsigned long)this->uma_host_base);
+      return;
+    }
+  }
 
   int fd = open(this->memfd.c_str(), O_RDWR);
   if (fd < 0)
@@ -148,11 +175,25 @@ void FetchEnableModule::map_fetch_enable_word()
     return;
   }
 
-  // mmap() needs a page-aligned offset: map the pages covering the word
+  // mmap() needs a page-aligned offset: map the pages covering the word(s)
   uint64_t word_offset = this->fetch_en_base_address - this->uma_host_base;
-  uint64_t page_size = (uint64_t)sysconf(_SC_PAGESIZE);
-  uint64_t map_offset = word_offset & ~(page_size - 1);
+  uint64_t first_offset = word_offset;
   uint64_t map_end = word_offset + sizeof(uint32_t);
+  uint64_t entry_offset = 0;
+  if (this->entry_addr != 0)
+  {
+    entry_offset = this->entry_addr - this->uma_host_base;
+    if (entry_offset < first_offset)
+    {
+      first_offset = entry_offset;
+    }
+    if (entry_offset + sizeof(uint32_t) > map_end)
+    {
+      map_end = entry_offset + sizeof(uint32_t);
+    }
+  }
+  uint64_t page_size = (uint64_t)sysconf(_SC_PAGESIZE);
+  uint64_t map_offset = first_offset & ~(page_size - 1);
   this->map_size = (size_t)(((map_end - map_offset) + page_size - 1) & ~(page_size - 1));
 
   struct stat st;
@@ -162,7 +203,7 @@ void FetchEnableModule::map_fetch_enable_word()
     this->trace.fatal("UMA memfd %s too small (size: 0x%lx, needed: 0x%lx): "
       "the host RAM must cover 0x%lx\n",
       this->memfd.c_str(), (unsigned long)st.st_size, (unsigned long)map_end,
-      (unsigned long)this->fetch_en_base_address);
+      (unsigned long)(this->uma_host_base + map_end));
     return;
   }
 
@@ -184,6 +225,14 @@ void FetchEnableModule::map_fetch_enable_word()
     "Mapped fetch enable word 0x%lx (memfd %s offset 0x%lx, page 0x%lx size 0x%lx)\n",
     (unsigned long)this->fetch_en_base_address, this->memfd.c_str(),
     (unsigned long)word_offset, (unsigned long)map_offset, (unsigned long)this->map_size);
+
+  if (this->entry_addr != 0)
+  {
+    this->entry_word = (volatile uint32_t *)(this->map_base + (entry_offset - map_offset));
+    this->trace.msg(vp::Trace::LEVEL_INFO,
+      "Mapped entry word 0x%lx (memfd offset 0x%lx)\n",
+      (unsigned long)this->entry_addr, (unsigned long)entry_offset);
+  }
 }
 
 void FetchEnableModule::stop()
@@ -193,6 +242,7 @@ void FetchEnableModule::stop()
     munmap(this->map_base, this->map_size);
     this->map_base = NULL;
     this->fetch_en_word = NULL;
+    this->entry_word = NULL;
   }
 }
 
@@ -236,6 +286,22 @@ void FetchEnableModule::check_value(uint32_t value)
     this->trace.msg(vp::Trace::LEVEL_INFO,
       "Fetch enable pattern 0x%08x found after %ld polls, enabling fetch\n",
       value, this->nb_polls);
+    if (this->entry_word != NULL)
+    {
+      // Written by the host before the pattern: the acquire load of the pattern
+      // orders this read after it. Sent before the fetch enable rising edge,
+      // which loads the boot address into the PC.
+      uint32_t entry = __atomic_load_n((uint32_t *)this->entry_word, __ATOMIC_ACQUIRE);
+      this->trace.msg(vp::Trace::LEVEL_INFO, "Entry from host: 0x%08x\n", entry);
+      if (this->entry_itf.is_bound())
+      {
+        this->entry_itf.sync(entry);
+      }
+      else
+      {
+        this->trace.force_warning("Entry 0x%08x read from host but entry port not bound\n", entry);
+      }
+    }
     this->set_fetch_enable(true);
   }
   else

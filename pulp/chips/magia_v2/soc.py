@@ -57,8 +57,10 @@ class MagiaV2Soc(gvsoc.systree.Component):
 
         self.set_attributes(tree)
 
-        # Bin Loader
-        if not MagiaArch.ENABLE_PCIE_VFIO:
+        # Bin Loader: not needed when the host loads the ELF (UMA) or with the PCIe bridge
+        host_loads_elf = MagiaArch.HOST_LOADS_ELF and not MagiaArch.ENABLE_PCIE_VFIO
+        self.loader = None
+        if not MagiaArch.ENABLE_PCIE_VFIO and not host_loads_elf:
             loader=utils.loader.loader.ElfLoader(self, f'loader', binary=binary)
             self.loader = loader
 
@@ -72,7 +74,9 @@ class MagiaV2Soc(gvsoc.systree.Component):
                                         poll_sleep_us=MagiaArch.FETCH_ENABLE_POLL_SLEEP_US,
                                         # Maps the fetch enable word from the host RAM; not used with the PCIe bridge
                                         memfd='' if MagiaArch.ENABLE_PCIE_VFIO else MagiaArch.UMA_MEMFD_PATH,
-                                        uma_host_base=MagiaArch.UMA_HOST_ADDR_START)
+                                        uma_host_base=MagiaArch.UMA_HOST_ADDR_START,
+                                        # Entry point written by the host next to the fetch enable word
+                                        entry_addr=MagiaArch.ENTRY_ADDR_START if host_loads_elf else 0)
 
         # Single clock domain
         clock = vp.clock_domain.Clock_domain(self, 'tile-clock',
@@ -431,9 +435,13 @@ class MagiaV2Soc(gvsoc.systree.Component):
                 pcie_ep.o_FETCH_ENABLE(cluster[id].i_FETCHEN())
                 pcie_ep.o_ENTRY_ADDR(cluster[id].i_ENTRY())
             else:
-                if (id == 0):
-                    loader.o_OUT(cluster[id].i_LOADER()) #only cluster connected to the corner loads the elf
-                #loader.o_START(cluster[id].i_FETCHEN())
                 fetch_enabler.o_FETCH_ENABLE(cluster[id].i_FETCHEN())
-                loader.o_ENTRY(cluster[id].i_ENTRY())
+                if host_loads_elf:
+                    # The host loaded the ELF: the entry comes with the fetch enable
+                    fetch_enabler.o_ENTRY(cluster[id].i_ENTRY())
+                else:
+                    if (id == 0):
+                        loader.o_OUT(cluster[id].i_LOADER()) #only cluster connected to the corner loads the elf
+                    #loader.o_START(cluster[id].i_FETCHEN())
+                    loader.o_ENTRY(cluster[id].i_ENTRY())
 
