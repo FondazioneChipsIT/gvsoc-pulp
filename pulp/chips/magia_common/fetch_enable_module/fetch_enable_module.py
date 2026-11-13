@@ -58,7 +58,7 @@ class FetchEnableModule(gvsoc.systree.Component):
             'entry_addr' : entry_addr,
         })
 
-        self.add_sources(['pulp/chips/magia_v2/fetch_enable_module/fetch_enable_module.cpp'])
+        self.add_sources(['pulp/chips/magia_common/fetch_enable_module/fetch_enable_module.cpp'])
 
     def i_INPUT(self) -> gvsoc.systree.SlaveItf:
         return gvsoc.systree.SlaveItf(self, 'input', signature='io')

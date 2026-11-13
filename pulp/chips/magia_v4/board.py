@@ -48,7 +48,8 @@ class MagiaV4Board(gvsoc.systree.Component):
         # We configure the loader binary now in the configure steps since it is coming from
         # a parameter which can be set either from command line or from the build process
         binary = self.get_parameter('binary')
-        if binary is not None and not MagiaArch.ENABLE_PCIE_VFIO:
+        # No loader when the host loads the ELF or with the PCIe bridge
+        if binary is not None and self.soc.ctrl_core_loader is not None:
             self.soc.ctrl_core_loader.set_binary(binary)
 
     def handle_binary(self, binary):

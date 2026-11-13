@@ -76,6 +76,36 @@ class MagiaArch:
     # Fixed, as in the RTL and SDK
     TEST_END_ADDR_START     = 0xCCFF_0000
     TEST_END_SIZE           = 0x400
+    FETCH_ENABLE_SIZE       = 0x4
+    # Fetch enable word after the test end area, as on magia_v2. It is in the
+    # L2 window, but read by the fetch enable module directly from the memfd
+    # (host RAM), not through the L2.
+    FETCH_ENABLE_ADDR_START = TEST_END_ADDR_START + TEST_END_SIZE
+    # Entry point word, written by the host (RTEMS) before the fetch enable
+    # pattern; same memfd page as the fetch enable word
+    ENTRY_ADDR_START        = FETCH_ENABLE_ADDR_START + 0x8
+    # True: the host loads the MAGIA ELF in the (UMA) L2 and provides the entry
+    # at ENTRY_ADDR_START; GVSoC does not preload the binary (no ELF loader).
+    # False: the GVSoC ELF loader loads the binary and sends the entry.
+    # Ignored with the PCIe bridge.
+    HOST_LOADS_ELF          = True
+    # Cycles between two reads of the fetch enable word
+    FETCH_ENABLE_POLL_PERIOD = 1000
+    # Wall-clock pause after each unsuccessful read: ~1000 reads per real second
+    FETCH_ENABLE_POLL_SLEEP_US = 1000
+    # UMA: the shared memfd is the host RAM (QEMU/RTEMS), whose offset 0 is at
+    # UMA_HOST_ADDR_START. The L2 is backed by the part of the memfd that the
+    # host sees at L2_ADDR_START (memfd offset L2_ADDR_START -
+    # UMA_HOST_ADDR_START, see pulp/memory_v3/memory_v3.cpp), so MAGIA and the
+    # host use the same physical addresses for the L2. The host RAM must
+    # therefore cover L2_ADDR_START + l2_size (e.g. 0x6000_0000 bytes with the
+    # default 1 GiB L2: QEMU -m 1536M or more, or a smaller l2_size).
+    # Must match the DRAM base of the QEMU cheshire machine
+    # (CHESHIRE_DRAM in qemu/hw/riscv/cheshire.c), RTEMS is linked there too.
+    UMA_HOST_ADDR_START     = 0xA000_0000
+    # Shared memory file (host RAM), created by the launcher. Not used with
+    # the PCIe bridge.
+    UMA_MEMFD_PATH          = '/tmp/magia_uma'
     STDOUT_ADDR             = 0xFFFF_0004
 
     # Boot address of the tile (magia.sv boot_addr_i, the start of the code in

@@ -18,7 +18,7 @@
 
 import gvsoc.systree
 import vp.clock_domain
-from memory.memory_v3 import Memory, MemoryV3Config
+from pulp.memory_v3.memory_v3 import Memory, UmaMemoryV3Config
 from interco.router_v2 import Router, RouterConfig, RouterMapping, KIND_UNTIMED, KIND_BANDWIDTH
 from utils.loader.loader_v2 import ElfLoader
 
@@ -29,6 +29,7 @@ from pulp.floonoc_v2.floonoc_v2 import FlooNocV22dMeshNarrowWide, FlooNocV2Direc
 from pulp.chips.magia_common.fractal_sync.fractal_sync import *
 from pulp.chips.magia_common.kill_module.kill_module import *
 from pulp.chips.magia_common.l2_port.l2_port import L2Port
+from pulp.chips.magia_common.fetch_enable_module.fetch_enable_module import FetchEnableModule
 from pulp.pcie_vfio_bridge.pcie_vfio_mem_bridge_v2 import PCIeVfioMemBridgeV2
 from typing import List, Dict
 import math
@@ -57,13 +58,29 @@ class MagiaV4Soc(gvsoc.systree.Component):
 
         self.set_attributes(tree)
 
-        # Standard platform level bin Loader
-        ctrl_core_loader=ElfLoader(self, f'ctrl_core_loader', binary=binary)
-        self.ctrl_core_loader = ctrl_core_loader # this is needed when building the platform as it requires at least one binary
+        # UMA: the L2 is the host RAM (memfd). With the PCIe bridge the host
+        # reaches the L2 through DMA, so the L2 is a private memory.
+        uma = not MagiaArch.ENABLE_PCIE_VFIO
+        # Bin Loader: not needed when the host loads the ELF (UMA) or with the PCIe bridge
+        host_loads_elf = MagiaArch.HOST_LOADS_ELF and uma
+        ctrl_core_loader = None
+        if uma and not host_loads_elf:
+            ctrl_core_loader=ElfLoader(self, f'ctrl_core_loader', binary=binary)
+        self.ctrl_core_loader = ctrl_core_loader
 
         # Simulation engine killer, with one input per tile
         killer=KillModule(self,'kill-module',kill_addr_base=MagiaArch.TEST_END_ADDR_START,kill_addr_size=MagiaArch.TEST_END_SIZE,nb_cores_to_wait=tree.nb_clusters,
                           nb_inputs=tree.nb_clusters, done_irq_enable=MagiaArch.ENABLE_PCIE_VFIO)
+
+        # Fetch enable module: polls the fetch enable word written by the host in
+        # its RAM (memfd) and starts the tiles; not used with the PCIe bridge
+        fetch_enabler=FetchEnableModule(self,'fetch-module',fetch_en_addr_base=MagiaArch.FETCH_ENABLE_ADDR_START,fetch_en_addr_size=MagiaArch.FETCH_ENABLE_SIZE,
+                                        poll_period=MagiaArch.FETCH_ENABLE_POLL_PERIOD,
+                                        poll_sleep_us=MagiaArch.FETCH_ENABLE_POLL_SLEEP_US,
+                                        memfd=MagiaArch.UMA_MEMFD_PATH if uma else '',
+                                        uma_host_base=MagiaArch.UMA_HOST_ADDR_START,
+                                        # Entry point written by the host next to the fetch enable word
+                                        entry_addr=MagiaArch.ENTRY_ADDR_START if host_loads_elf else 0)
 
         # Single clock domain
         clock = vp.clock_domain.Clock_domain(self, 'tile-clock',
@@ -77,8 +94,15 @@ class MagiaV4Soc(gvsoc.systree.Component):
 
         # L2. No address truncation: l2_size is not necessarily a power of two,
         # and the NoC already rebases the accesses (rm_base on the L2 mapping).
-        l2_mem = Memory(self, f'L2-mem', config=MemoryV3Config(
-            size=tree.l2_size, latency=MagiaDSE.SOC_L2_LATENCY, truncate=False))
+        # UMA: the L2 array is the host RAM (memfd) window seen at L2_ADDR_START,
+        # mapped by the memory itself (no private array allocated). With the PCIe
+        # bridge the L2 is a private memory (no memfd).
+        l2_mem = Memory(self, f'L2-mem', config=UmaMemoryV3Config(
+            size=tree.l2_size, latency=MagiaDSE.SOC_L2_LATENCY, truncate=False,
+            memfd=MagiaArch.UMA_MEMFD_PATH if uma else '',
+            uma_host_base=MagiaArch.UMA_HOST_ADDR_START,
+            uma_window_start=MagiaArch.L2_ADDR_START,
+            uma_window_size=tree.l2_size))
 
         # L2 fan-in: the NoC has one narrow and one wide output per row and the
         # memory has a single input, so the 2*n_tiles_y channels are joined by
@@ -445,13 +469,19 @@ class MagiaV4Soc(gvsoc.systree.Component):
                     fsync_center_v[lvl-1][1].o_MASTER_EAST_WEST(fsync_root.i_SLAVE_EAST())
                     fsync_root.o_SLAVE_EAST(fsync_center_v[lvl-1][1].i_MASTER_EAST_WEST())
 
-        # Bind the loader, or the PCIe/VFIO bridge, to the clusters
+        # Bind the fetch enable module and the loader, or the PCIe/VFIO bridge,
+        # to the clusters
         for id in range(0,tree.nb_clusters):
             if MagiaArch.ENABLE_PCIE_VFIO:
                 pcie_ep.o_FETCH_ENABLE(cluster[id].i_FETCHEN())
                 pcie_ep.o_ENTRY_ADDR(cluster[id].i_ENTRY())
             else:
-                if (id == 0):
-                    ctrl_core_loader.o_OUT(l2_loader_xbar.i_INPUT())
-                ctrl_core_loader.o_START(cluster[id].i_FETCHEN())
-                ctrl_core_loader.o_ENTRY(cluster[id].i_ENTRY())
+                # The tiles start when the host writes the fetch enable word
+                fetch_enabler.o_FETCH_ENABLE(cluster[id].i_FETCHEN())
+                if host_loads_elf:
+                    # The host loaded the ELF: the entry comes with the fetch enable
+                    fetch_enabler.o_ENTRY(cluster[id].i_ENTRY())
+                else:
+                    if (id == 0):
+                        ctrl_core_loader.o_OUT(l2_loader_xbar.i_INPUT())
+                    ctrl_core_loader.o_ENTRY(cluster[id].i_ENTRY())

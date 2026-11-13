@@ -29,7 +29,7 @@ if MagiaArch.ENABLE_PCIE_VFIO:
 from pulp.floonoc.floonoc import *
 from pulp.chips.magia_v2.fractal_sync.fractal_sync import *
 from pulp.chips.magia_v2.kill_module.kill_module import *
-from pulp.chips.magia_v2.fetch_enable_module.fetch_enable_module import *
+from pulp.chips.magia_common.fetch_enable_module.fetch_enable_module import *
 from typing import List, Dict
 import math
 
