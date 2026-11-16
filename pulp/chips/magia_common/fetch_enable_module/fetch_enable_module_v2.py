@@ -14,7 +14,7 @@
 
 
 
-# Authors: Lorenzo Zuolo, Chips-IT (lorenzo.zuolo@chips.it)
+# Authors: Riccardo Repetto, Chips-IT (riccardo.repetto@chips.it)
 
 import gvsoc.systree
 from gvsoc.signature import IoV2Sync
@@ -39,8 +39,6 @@ class FetchEnableModuleV2(gvsoc.systree.Component):
                 entry_addr: int = 0):
         """fetch_en_pattern: value that enables the fetch when read at fetch_en_addr_base.
         poll_period: cycles between two reads of the fetch enable word (through o_MEM).
-        poll_sleep_us: wall-clock pause after each unsuccessful read (0 = none), bounds
-        the number of reads while the host boots.
         entry_addr: address of a 32-bit word holding the entry point, written by the
         host before the fetch enable pattern. When not 0, the module reads it (through
         o_MEM) once the pattern is found and sends it on the entry port (o_ENTRY) before

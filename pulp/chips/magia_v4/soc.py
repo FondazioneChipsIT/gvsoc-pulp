@@ -485,13 +485,13 @@ class MagiaV4Soc(gvsoc.systree.Component):
                 if uma:
                     # The tiles start when the host writes the fetch enable word
                     fetch_enabler.o_FETCH_ENABLE(cluster[id].i_FETCHEN())
-                else:
-                    # No host: the ELF loader starts the tiles once loaded
-                    ctrl_core_loader.o_START(cluster[id].i_FETCHEN())
-                if uma:
                     # The host loaded the ELF: the entry comes with the fetch enable
                     fetch_enabler.o_ENTRY(cluster[id].i_ENTRY())
                 else:
+                    # No host: the ELF loader starts the tiles once loaded
+                    ctrl_core_loader.o_START(cluster[id].i_FETCHEN())
                     if (id == 0):
                         ctrl_core_loader.o_OUT(l2_loader_xbar.i_INPUT())
                     ctrl_core_loader.o_ENTRY(cluster[id].i_ENTRY())
+                    
+

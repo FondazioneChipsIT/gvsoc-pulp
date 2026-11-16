@@ -15,7 +15,7 @@
  */
 
 /*
- * Authors: Lorenzo Zuolo, Chips-IT (lorenzo.zuolo@chips.it)
+ * Authors: Riccardo Repetto, Chips-IT (riccardo.repetto@chips.it)
  */
 
 /*
