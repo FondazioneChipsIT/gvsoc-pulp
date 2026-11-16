@@ -78,18 +78,17 @@ class MagiaArch:
     TEST_END_SIZE           = 0x400
     FETCH_ENABLE_SIZE       = 0x4
     # Fetch enable word after the test end area, as on magia_v2. It is in the
-    # L2 window, but read by the fetch enable module directly from the memfd
-    # (host RAM), not through the L2.
+    # L2 window (host RAM): the fetch enable module reads it through the L2.
     FETCH_ENABLE_ADDR_START = TEST_END_ADDR_START + TEST_END_SIZE
     # Entry point word, written by the host (RTEMS) before the fetch enable
-    # pattern; same memfd page as the fetch enable word
+    # pattern, also read through the L2
     ENTRY_ADDR_START        = FETCH_ENABLE_ADDR_START + 0x8
     # True: the host loads the MAGIA ELF in the (UMA) L2 and provides the entry
     # at ENTRY_ADDR_START; GVSoC does not preload the binary (no ELF loader).
     # False: the GVSoC ELF loader loads the binary and sends the entry.
     # Ignored with the PCIe bridge.
     HOST_LOADS_ELF          = True
-    # Cycles between two reads of the fetch enable word
+    # Cycles between two reads of the fetch enable word (each read is an L2 access)
     FETCH_ENABLE_POLL_PERIOD = 1000
     # Wall-clock pause after each unsuccessful read: ~1000 reads per real second
     FETCH_ENABLE_POLL_SLEEP_US = 1000

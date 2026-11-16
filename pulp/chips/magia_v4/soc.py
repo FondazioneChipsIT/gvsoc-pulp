@@ -29,7 +29,7 @@ from pulp.floonoc_v2.floonoc_v2 import FlooNocV22dMeshNarrowWide, FlooNocV2Direc
 from pulp.chips.magia_common.fractal_sync.fractal_sync import *
 from pulp.chips.magia_common.kill_module.kill_module import *
 from pulp.chips.magia_common.l2_port.l2_port import L2Port
-from pulp.chips.magia_common.fetch_enable_module.fetch_enable_module import FetchEnableModule
+from pulp.chips.magia_common.fetch_enable_module.fetch_enable_module_v2 import FetchEnableModuleV2
 from pulp.pcie_vfio_bridge.pcie_vfio_mem_bridge_v2 import PCIeVfioMemBridgeV2
 from typing import List, Dict
 import math
@@ -72,13 +72,12 @@ class MagiaV4Soc(gvsoc.systree.Component):
         killer=KillModule(self,'kill-module',kill_addr_base=MagiaArch.TEST_END_ADDR_START,kill_addr_size=MagiaArch.TEST_END_SIZE,nb_cores_to_wait=tree.nb_clusters,
                           nb_inputs=tree.nb_clusters, done_irq_enable=MagiaArch.ENABLE_PCIE_VFIO)
 
-        # Fetch enable module: polls the fetch enable word written by the host in
-        # its RAM (memfd) and starts the tiles; not used with the PCIe bridge
-        fetch_enabler=FetchEnableModule(self,'fetch-module',fetch_en_addr_base=MagiaArch.FETCH_ENABLE_ADDR_START,fetch_en_addr_size=MagiaArch.FETCH_ENABLE_SIZE,
+        # Fetch enable module: polls, through the L2, the fetch enable word written
+        # by the host in its RAM and starts the tiles; not used with the PCIe bridge
+        # (its L2 port is then left unbound)
+        fetch_enabler=FetchEnableModuleV2(self,'fetch-module',fetch_en_addr_base=MagiaArch.FETCH_ENABLE_ADDR_START,fetch_en_addr_size=MagiaArch.FETCH_ENABLE_SIZE,
                                         poll_period=MagiaArch.FETCH_ENABLE_POLL_PERIOD,
                                         poll_sleep_us=MagiaArch.FETCH_ENABLE_POLL_SLEEP_US,
-                                        memfd=MagiaArch.UMA_MEMFD_PATH if uma else '',
-                                        uma_host_base=MagiaArch.UMA_HOST_ADDR_START,
                                         # Entry point written by the host next to the fetch enable word
                                         entry_addr=MagiaArch.ENTRY_ADDR_START if host_loads_elf else 0)
 
@@ -111,6 +110,11 @@ class MagiaV4Soc(gvsoc.systree.Component):
         # adapter the framework inserts.
         l2_xbar = Router(self, 'L2-xbar', config=RouterConfig(kind=KIND_UNTIMED))
         l2_xbar.o_MAP_DEFAULT(l2_mem.i_INPUT(), name='L2-mem')
+
+        # The fetch enable module reads its words directly from the L2, with
+        # absolute addresses, which the L2 converts through its UMA window
+        if uma:
+            fetch_enabler.o_MEM(l2_mem.i_INPUT())
 
         # PCIe/VFIO bridge: the host loads the binaries into the L2 and starts
         # the tiles through it instead of the ELF loader. It reaches the L2 on
