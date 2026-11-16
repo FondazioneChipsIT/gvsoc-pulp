@@ -83,11 +83,6 @@ class MagiaArch:
     # Entry point word, written by the host (RTEMS) before the fetch enable
     # pattern, also read through the L2
     ENTRY_ADDR_START        = FETCH_ENABLE_ADDR_START + 0x8
-    # True: the host loads the MAGIA ELF in the (UMA) L2 and provides the entry
-    # at ENTRY_ADDR_START; GVSoC does not preload the binary (no ELF loader).
-    # False: the GVSoC ELF loader loads the binary and sends the entry.
-    # Ignored with the PCIe bridge.
-    HOST_LOADS_ELF          = True
     # Cycles between two reads of the fetch enable word (each read is an L2 access)
     FETCH_ENABLE_POLL_PERIOD = 1000
     # UMA: the shared memfd is the host RAM (QEMU/RTEMS), whose offset 0 is at
@@ -100,14 +95,14 @@ class MagiaArch:
     # Must match the DRAM base of the QEMU cheshire machine
     # (CHESHIRE_DRAM in qemu/hw/riscv/cheshire.c), RTEMS is linked there too.
     UMA_HOST_ADDR_START     = 0xA000_0000
-    # Shared memory file (host RAM), created by the launcher. Not used with
-    # the PCIe bridge.
+    # Shared memory file (host RAM), created by the launcher. If the path is 
+    # not empty: the L2 is the host RAM (memfd) and the host starts the tiles
+    # through the fetch enable word, in this case ENABLE_PCIE_VFIO must be false
+    # otherwise a runtime error is raised. If the path is empty: the L2 is a
+    # private memory, the GVSOC ELF loader (in case ENABLE_PCIE_VFIO is false)
+    # or the PCIe VFIO (in case ENABLE_PCIE_VFIO is true) loads the binary and
+    # starts the tiles
     UMA_MEMFD_PATH          = '/tmp/magia_uma'
-    # Default of the 'uma' target parameter. True: the L2 is the host RAM
-    # (memfd) and the host starts the tiles through the fetch enable word.
-    # False (standalone GVSoC): the L2 is a private memory, the ELF loader
-    # loads the binary and starts the tiles. Ignored with the PCIe bridge.
-    UMA_ENABLE              = True
     STDOUT_ADDR             = 0xFFFF_0004
 
     # Boot address of the tile (magia.sv boot_addr_i, the start of the code in
@@ -192,12 +187,6 @@ class MagiaTree(Tree):
             raise RuntimeError(f'l2_size must be a multiple of 4 KiB in '
                 f'(0, {MagiaArch.L2_MAX_SIZE:#x}] (got {self.l2_size:#x})')
 
-        # UMA with the host (QEMU/RTEMS), see MagiaArch.UMA_ENABLE
-        self.uma = TargetParameter(parent, name='uma',
-            value=MagiaArch.UMA_ENABLE, cast=bool,
-            description='L2 shared with the host RAM (memfd), '
-                'false to run GVSoC standalone').value
-
         # Design-space knobs: Spatz VLEN and RedMulE array size
         self.spatz_vlen = TargetParameter(parent, name='spatz_vlen',
             value=MagiaArch.SPATZ_VLEN, cast=int,
@@ -223,7 +212,11 @@ class MagiaTree(Tree):
                 value=MagiaArch.NB_PULP_CORES, cast=int,
                 description='Number of pulp cores').value
             print(f"PULP complex enabled with {self.nb_pulp_cores} cores")
-
+            
+        if MagiaArch.ENABLE_PCIE_VFIO and MagiaArch.UMA_MEMFD_PATH:
+           raise RuntimeError('When ENABLE_PCIE_VFIO is true,  UMA_MEMFD_PATH must be empty')
+           
+        
 class MagiaDSE:
     # L2 of the testbench (magia_l2_mem_wrapper.sv): an axi_sim_mem answering
     # one cycle after the request, behind an axi_dw_upsizer on each narrow

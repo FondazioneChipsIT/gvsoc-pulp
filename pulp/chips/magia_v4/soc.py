@@ -62,11 +62,10 @@ class MagiaV4Soc(gvsoc.systree.Component):
         # reaches the L2 through DMA, and without UMA (target parameter
         # uma=false, standalone GVSoC) there is no host, so the L2 is a
         # private memory.
-        uma = tree.uma and not MagiaArch.ENABLE_PCIE_VFIO
+        uma = MagiaArch.UMA_MEMFD_PATH
         # Bin Loader: not needed when the host loads the ELF (UMA) or with the PCIe bridge
-        host_loads_elf = MagiaArch.HOST_LOADS_ELF and uma
         ctrl_core_loader = None
-        if not MagiaArch.ENABLE_PCIE_VFIO and not host_loads_elf:
+        if not MagiaArch.ENABLE_PCIE_VFIO and not uma:
             ctrl_core_loader=ElfLoader(self, f'ctrl_core_loader', binary=binary)
         self.ctrl_core_loader = ctrl_core_loader
 
@@ -82,7 +81,7 @@ class MagiaV4Soc(gvsoc.systree.Component):
             fetch_enabler=FetchEnableModuleV2(self,'fetch-module',fetch_en_addr_base=MagiaArch.FETCH_ENABLE_ADDR_START,fetch_en_addr_size=MagiaArch.FETCH_ENABLE_SIZE,
                                             poll_period=MagiaArch.FETCH_ENABLE_POLL_PERIOD,
                                             # Entry point written by the host next to the fetch enable word
-                                            entry_addr=MagiaArch.ENTRY_ADDR_START if host_loads_elf else 0)
+                                            entry_addr=MagiaArch.ENTRY_ADDR_START)
 
         # Single clock domain
         clock = vp.clock_domain.Clock_domain(self, 'tile-clock',
@@ -101,7 +100,7 @@ class MagiaV4Soc(gvsoc.systree.Component):
         # bridge the L2 is a private memory (no memfd).
         l2_mem = Memory(self, f'L2-mem', config=UmaMemoryV3Config(
             size=tree.l2_size, latency=MagiaDSE.SOC_L2_LATENCY, truncate=False,
-            memfd=MagiaArch.UMA_MEMFD_PATH if uma else '',
+            memfd=MagiaArch.UMA_MEMFD_PATH,
             uma_host_base=MagiaArch.UMA_HOST_ADDR_START,
             uma_window_start=MagiaArch.L2_ADDR_START,
             uma_window_size=tree.l2_size))
@@ -489,7 +488,7 @@ class MagiaV4Soc(gvsoc.systree.Component):
                 else:
                     # No host: the ELF loader starts the tiles once loaded
                     ctrl_core_loader.o_START(cluster[id].i_FETCHEN())
-                if host_loads_elf:
+                if uma:
                     # The host loaded the ELF: the entry comes with the fetch enable
                     fetch_enabler.o_ENTRY(cluster[id].i_ENTRY())
                 else:
