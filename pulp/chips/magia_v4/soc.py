@@ -59,12 +59,14 @@ class MagiaV4Soc(gvsoc.systree.Component):
         self.set_attributes(tree)
 
         # UMA: the L2 is the host RAM (memfd). With the PCIe bridge the host
-        # reaches the L2 through DMA, so the L2 is a private memory.
-        uma = not MagiaArch.ENABLE_PCIE_VFIO
+        # reaches the L2 through DMA, and without UMA (target parameter
+        # uma=false, standalone GVSoC) there is no host, so the L2 is a
+        # private memory.
+        uma = tree.uma and not MagiaArch.ENABLE_PCIE_VFIO
         # Bin Loader: not needed when the host loads the ELF (UMA) or with the PCIe bridge
         host_loads_elf = MagiaArch.HOST_LOADS_ELF and uma
         ctrl_core_loader = None
-        if uma and not host_loads_elf:
+        if not MagiaArch.ENABLE_PCIE_VFIO and not host_loads_elf:
             ctrl_core_loader=ElfLoader(self, f'ctrl_core_loader', binary=binary)
         self.ctrl_core_loader = ctrl_core_loader
 
@@ -73,12 +75,14 @@ class MagiaV4Soc(gvsoc.systree.Component):
                           nb_inputs=tree.nb_clusters, done_irq_enable=MagiaArch.ENABLE_PCIE_VFIO)
 
         # Fetch enable module: polls, through the L2, the fetch enable word written
-        # by the host in its RAM and starts the tiles; not used with the PCIe bridge
-        # (its L2 port is then left unbound)
-        fetch_enabler=FetchEnableModuleV2(self,'fetch-module',fetch_en_addr_base=MagiaArch.FETCH_ENABLE_ADDR_START,fetch_en_addr_size=MagiaArch.FETCH_ENABLE_SIZE,
-                                        poll_period=MagiaArch.FETCH_ENABLE_POLL_PERIOD,
-                                        # Entry point written by the host next to the fetch enable word
-                                        entry_addr=MagiaArch.ENTRY_ADDR_START if host_loads_elf else 0)
+        # by the host in its RAM and starts the tiles; only with UMA (with the
+        # PCIe bridge the bridge starts the tiles, without UMA the ELF loader)
+        fetch_enabler = None
+        if uma:
+            fetch_enabler=FetchEnableModuleV2(self,'fetch-module',fetch_en_addr_base=MagiaArch.FETCH_ENABLE_ADDR_START,fetch_en_addr_size=MagiaArch.FETCH_ENABLE_SIZE,
+                                            poll_period=MagiaArch.FETCH_ENABLE_POLL_PERIOD,
+                                            # Entry point written by the host next to the fetch enable word
+                                            entry_addr=MagiaArch.ENTRY_ADDR_START if host_loads_elf else 0)
 
         # Single clock domain
         clock = vp.clock_domain.Clock_domain(self, 'tile-clock',
@@ -479,8 +483,12 @@ class MagiaV4Soc(gvsoc.systree.Component):
                 pcie_ep.o_FETCH_ENABLE(cluster[id].i_FETCHEN())
                 pcie_ep.o_ENTRY_ADDR(cluster[id].i_ENTRY())
             else:
-                # The tiles start when the host writes the fetch enable word
-                fetch_enabler.o_FETCH_ENABLE(cluster[id].i_FETCHEN())
+                if uma:
+                    # The tiles start when the host writes the fetch enable word
+                    fetch_enabler.o_FETCH_ENABLE(cluster[id].i_FETCHEN())
+                else:
+                    # No host: the ELF loader starts the tiles once loaded
+                    ctrl_core_loader.o_START(cluster[id].i_FETCHEN())
                 if host_loads_elf:
                     # The host loaded the ELF: the entry comes with the fetch enable
                     fetch_enabler.o_ENTRY(cluster[id].i_ENTRY())

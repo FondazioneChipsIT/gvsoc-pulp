@@ -103,6 +103,11 @@ class MagiaArch:
     # Shared memory file (host RAM), created by the launcher. Not used with
     # the PCIe bridge.
     UMA_MEMFD_PATH          = '/tmp/magia_uma'
+    # Default of the 'uma' target parameter. True: the L2 is the host RAM
+    # (memfd) and the host starts the tiles through the fetch enable word.
+    # False (standalone GVSoC): the L2 is a private memory, the ELF loader
+    # loads the binary and starts the tiles. Ignored with the PCIe bridge.
+    UMA_ENABLE              = True
     STDOUT_ADDR             = 0xFFFF_0004
 
     # Boot address of the tile (magia.sv boot_addr_i, the start of the code in
@@ -186,6 +191,12 @@ class MagiaTree(Tree):
         if self.l2_size % 4096 != 0 or not 0 < self.l2_size <= MagiaArch.L2_MAX_SIZE:
             raise RuntimeError(f'l2_size must be a multiple of 4 KiB in '
                 f'(0, {MagiaArch.L2_MAX_SIZE:#x}] (got {self.l2_size:#x})')
+
+        # UMA with the host (QEMU/RTEMS), see MagiaArch.UMA_ENABLE
+        self.uma = TargetParameter(parent, name='uma',
+            value=MagiaArch.UMA_ENABLE, cast=bool,
+            description='L2 shared with the host RAM (memfd), '
+                'false to run GVSoC standalone').value
 
         # Design-space knobs: Spatz VLEN and RedMulE array size
         self.spatz_vlen = TargetParameter(parent, name='spatz_vlen',
