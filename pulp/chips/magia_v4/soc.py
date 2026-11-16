@@ -77,7 +77,6 @@ class MagiaV4Soc(gvsoc.systree.Component):
         # (its L2 port is then left unbound)
         fetch_enabler=FetchEnableModuleV2(self,'fetch-module',fetch_en_addr_base=MagiaArch.FETCH_ENABLE_ADDR_START,fetch_en_addr_size=MagiaArch.FETCH_ENABLE_SIZE,
                                         poll_period=MagiaArch.FETCH_ENABLE_POLL_PERIOD,
-                                        poll_sleep_us=MagiaArch.FETCH_ENABLE_POLL_SLEEP_US,
                                         # Entry point written by the host next to the fetch enable word
                                         entry_addr=MagiaArch.ENTRY_ADDR_START if host_loads_elf else 0)
 

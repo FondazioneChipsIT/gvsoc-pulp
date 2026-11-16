@@ -36,7 +36,6 @@ class FetchEnableModuleV2(gvsoc.systree.Component):
                 fetch_en_addr_size: int,
                 fetch_en_pattern: int = 0xFFFFFFFF,
                 poll_period: int = 1000,
-                poll_sleep_us: int = 1000,
                 entry_addr: int = 0):
         """fetch_en_pattern: value that enables the fetch when read at fetch_en_addr_base.
         poll_period: cycles between two reads of the fetch enable word (through o_MEM).
@@ -56,7 +55,6 @@ class FetchEnableModuleV2(gvsoc.systree.Component):
             'fetch_en_addr_size' : fetch_en_addr_size,
             'fetch_en_pattern' : fetch_en_pattern,
             'poll_period' : poll_period,
-            'poll_sleep_us' : poll_sleep_us,
             'entry_addr' : entry_addr,
         })
 

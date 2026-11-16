@@ -90,8 +90,6 @@ class MagiaArch:
     HOST_LOADS_ELF          = True
     # Cycles between two reads of the fetch enable word (each read is an L2 access)
     FETCH_ENABLE_POLL_PERIOD = 1000
-    # Wall-clock pause after each unsuccessful read: ~1000 reads per real second
-    FETCH_ENABLE_POLL_SLEEP_US = 1000
     # UMA: the shared memfd is the host RAM (QEMU/RTEMS), whose offset 0 is at
     # UMA_HOST_ADDR_START. The L2 is backed by the part of the memfd that the
     # host sees at L2_ADDR_START (memfd offset L2_ADDR_START -

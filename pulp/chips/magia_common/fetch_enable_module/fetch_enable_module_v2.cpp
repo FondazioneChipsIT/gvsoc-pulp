@@ -77,7 +77,6 @@ private:
   uint64_t fetch_en_addr_size;
   uint32_t fetch_en_pattern;
   int64_t poll_period;
-  int64_t poll_sleep_us;
   // Address of the entry word, 0 if the entry does not come from the host
   uint64_t entry_addr;
   bool enabled;
@@ -102,7 +101,6 @@ FetchEnableModuleV2::FetchEnableModuleV2(vp::ComponentConf &config)
   {
     this->poll_period = 1;
   }
-  this->poll_sleep_us = get_js_config()->get("poll_sleep_us")->get_int();
   this->entry_addr = get_js_config()->get_uint("entry_addr");
 
   if (this->fetch_en_addr_size < sizeof(uint32_t))
@@ -139,8 +137,8 @@ void FetchEnableModuleV2::reset(bool active)
   else if (this->mem_itf.is_bound())
   {
     this->trace.msg(vp::Trace::LEVEL_INFO,
-      "Polling fetch enable word through the L2 (addr: 0x%lx, pattern: 0x%08x, period: %ld cycles, sleep: %ld us)\n",
-      this->fetch_en_base_address, this->fetch_en_pattern, this->poll_period, this->poll_sleep_us);
+      "Polling fetch enable word through the L2 (addr: 0x%lx, pattern: 0x%08x, period: %ld cycles)\n",
+      this->fetch_en_base_address, this->fetch_en_pattern, this->poll_period);
     this->event_enqueue(this->poll_event, 1);
   }
 }
@@ -209,12 +207,6 @@ void FetchEnableModuleV2::check_value(uint32_t value)
   }
   else
   {
-    // The cores are stalled and the poll is the only event: without a wall-clock
-    // pause the engine would poll (and log) millions of times while the host boots.
-    if (this->poll_sleep_us > 0)
-    {
-      usleep(this->poll_sleep_us);
-    }
     this->event_enqueue(this->poll_event, this->poll_period);
   }
 }
