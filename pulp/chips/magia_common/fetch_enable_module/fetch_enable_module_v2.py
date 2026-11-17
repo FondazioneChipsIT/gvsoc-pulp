@@ -25,8 +25,8 @@ class FetchEnableModuleV2(gvsoc.systree.Component):
     Same behaviour as FetchEnableModule, but the fetch enable word and the entry
     word are read through the ``mem`` port (o_MEM), bound to the L2 memory, instead
     of being mapped from the memfd: the module does not know about the memfd. The
-    addresses are the absolute ones (e.g. 0xCCFF_0400), the L2 converts them into
-    offsets (see the UMA window of pulp.memory_v3.memory_v3).
+    addresses are the absolute ones (e.g. 0xCCFF_0400): the port must be bound
+    to a synchronous remapper stripping the L2 base address (interco.remapper_v2).
     """
 
     def __init__(self,

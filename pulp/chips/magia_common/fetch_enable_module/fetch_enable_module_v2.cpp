@@ -22,9 +22,10 @@
  * Fetch enable module, io_v2 version reading through the L2.
  *
  * The host (QEMU) cannot generate GVSoC requests: it only writes its RAM,
- * which is also the L2 (UMA memfd mapped by the L2 memory). So, once out of
+ * which is also the L2 (UMA memfd window given to the L2 memory by UmaMemfd). So, once out of
  * reset, this module reads the fetch enable word (fetch_en_addr_base) through
- * its "mem" port, bound to the L2, every poll_period cycles. When the word
+ * its "mem" port, bound to the L2 through a remapper stripping the L2 base
+ * address, every poll_period cycles. When the word
  * contains fetch_en_pattern, it raises fetch enable on all the bound cores and
  * stops polling. The module does not map the memfd itself.
  *

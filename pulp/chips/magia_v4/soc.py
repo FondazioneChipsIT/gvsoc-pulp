@@ -18,8 +18,10 @@
 
 import gvsoc.systree
 import vp.clock_domain
-from pulp.memory_v3.memory_v3 import Memory, UmaMemoryV3Config
+from memory.memory_v3 import Memory, MemoryV3Config
 from interco.router_v2 import Router, RouterConfig, RouterMapping, KIND_UNTIMED, KIND_BANDWIDTH
+from interco.remapper_v2 import Remapper, RemapperConfig
+from gvsoc.signature import IoV2Sync
 from utils.loader.loader_v2 import ElfLoader
 
 from pulp.chips.magia_v4.tile import MagiaV4Tile
@@ -30,6 +32,7 @@ from pulp.chips.magia_common.fractal_sync.fractal_sync import *
 from pulp.chips.magia_common.kill_module.kill_module import *
 from pulp.chips.magia_common.l2_port.l2_port import L2Port
 from pulp.chips.magia_common.fetch_enable_module.fetch_enable_module_v2 import FetchEnableModuleV2
+from pulp.memory.uma_memfd import UmaMemfd
 from pulp.pcie_vfio_bridge.pcie_vfio_mem_bridge_v2 import PCIeVfioMemBridgeV2
 from typing import List, Dict
 import math
@@ -95,15 +98,18 @@ class MagiaV4Soc(gvsoc.systree.Component):
 
         # L2. No address truncation: l2_size is not necessarily a power of two,
         # and the NoC already rebases the accesses (rm_base on the L2 mapping).
-        # UMA: the L2 array is the host RAM (memfd) window seen at L2_ADDR_START,
-        # mapped by the memory itself (no private array allocated). With the PCIe
-        # bridge the L2 is a private memory (no memfd).
-        l2_mem = Memory(self, f'L2-mem', config=UmaMemoryV3Config(
+        # UMA: at start, the L2 array is replaced (meminfo port) by the host RAM
+        # (memfd) window seen at L2_ADDR_START, mapped by the UmaMemfd component
+        # (no poisoning of the private array then). With the PCIe bridge the L2
+        # is a private memory (no memfd).
+        l2_mem = Memory(self, f'L2-mem', config=MemoryV3Config(
             size=tree.l2_size, latency=MagiaDSE.SOC_L2_LATENCY, truncate=False,
-            memfd=MagiaArch.UMA_MEMFD_PATH,
-            uma_host_base=MagiaArch.UMA_HOST_ADDR_START,
-            uma_window_start=MagiaArch.L2_ADDR_START,
-            uma_window_size=tree.l2_size))
+            init=not uma))
+        if uma:
+            l2_uma = UmaMemfd(self, 'L2-uma', memfd=MagiaArch.UMA_MEMFD_PATH,
+                host_base=MagiaArch.UMA_HOST_ADDR_START, window_start=MagiaArch.L2_ADDR_START,
+                size=tree.l2_size)
+            l2_uma.o_MEMINFO(l2_mem.i_MEMINFO())
 
         # L2 fan-in: the NoC has one narrow and one wide output per row and the
         # memory has a single input, so the 2*n_tiles_y channels are joined by
@@ -112,11 +118,6 @@ class MagiaV4Soc(gvsoc.systree.Component):
         # adapter the framework inserts.
         l2_xbar = Router(self, 'L2-xbar', config=RouterConfig(kind=KIND_UNTIMED))
         l2_xbar.o_MAP_DEFAULT(l2_mem.i_INPUT(), name='L2-mem')
-
-        # The fetch enable module reads its words directly from the L2, with
-        # absolute addresses, which the L2 converts through its UMA window
-        if uma:
-            fetch_enabler.o_MEM(l2_mem.i_INPUT())
 
         # PCIe/VFIO bridge: the host loads the binaries into the L2 and starts
         # the tiles through it instead of the ELF loader. It reaches the L2 on
@@ -134,6 +135,16 @@ class MagiaV4Soc(gvsoc.systree.Component):
         l2_loader_xbar.o_MAP(l2_xbar.i_INPUT(1), RouterMapping(base=MagiaArch.L2_ADDR_START,
             size=tree.l2_size, remove_base=True), name='L2')
         l2_loader_xbar.add_mapping('error')
+
+        # The fetch enable module reads its words from the L2 with absolute
+        # addresses, through a remapper stripping the L2 base address. Synchronous
+        # (IoV2Sync) as the module and the L2, unlike the router of the loader.
+        if uma:
+            l2_fetch_remap = Remapper(self, 'L2-fetch-remap', config=RemapperConfig(
+                base=MagiaArch.L2_ADDR_START, size=tree.l2_size, target_base=0),
+                signature=IoV2Sync())
+            fetch_enabler.o_MEM(l2_fetch_remap.i_INPUT())
+            l2_fetch_remap.o_OUTPUT(l2_mem.i_INPUT())
 
         # Create Tile matrix for IDs
         # --------------> X direction

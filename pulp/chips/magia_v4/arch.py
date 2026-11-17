@@ -88,7 +88,7 @@ class MagiaArch:
     # UMA: the shared memfd is the host RAM (QEMU/RTEMS), whose offset 0 is at
     # UMA_HOST_ADDR_START. The L2 is backed by the part of the memfd that the
     # host sees at L2_ADDR_START (memfd offset L2_ADDR_START -
-    # UMA_HOST_ADDR_START, see pulp/memory_v3/memory_v3.cpp), so MAGIA and the
+    # UMA_HOST_ADDR_START, see pulp/memory/uma_memfd.cpp), so MAGIA and the
     # host use the same physical addresses for the L2. The host RAM must
     # therefore cover L2_ADDR_START + l2_size (e.g. 0x6000_0000 bytes with the
     # default 1 GiB L2: QEMU -m 1536M or more, or a smaller l2_size).
