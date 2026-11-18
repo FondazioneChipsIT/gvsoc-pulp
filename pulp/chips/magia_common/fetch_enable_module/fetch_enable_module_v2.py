@@ -34,7 +34,7 @@ class FetchEnableModuleV2(gvsoc.systree.Component):
                 name: str,
                 fetch_en_addr_base: int,
                 fetch_en_addr_size: int,
-                fetch_en_pattern: int = 0xFFFFFFFF,
+                fetch_en_pattern: int = 0x1A2B3C4E,
                 poll_period: int = 1000,
                 entry_addr: int = 0):
         """fetch_en_pattern: value that enables the fetch when read at fetch_en_addr_base.

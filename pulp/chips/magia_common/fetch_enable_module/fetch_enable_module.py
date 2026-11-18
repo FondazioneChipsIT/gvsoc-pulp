@@ -25,7 +25,7 @@ class FetchEnableModule(gvsoc.systree.Component):
                 name: str,
                 fetch_en_addr_base: int,
                 fetch_en_addr_size: int,
-                fetch_en_pattern: int = 0xFFFFFFFF,
+                fetch_en_pattern: int = 0x1A2B3C4E,
                 poll_period: int = 1000,
                 poll_sleep_us: int = 1000,
                 memfd: str = '',
