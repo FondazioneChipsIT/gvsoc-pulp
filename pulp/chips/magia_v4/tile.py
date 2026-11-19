@@ -156,6 +156,9 @@ class MagiaV4Tile(gvsoc.systree.Component):
 
         l1_base = MagiaArch.L1_ADDR_START + tid * MagiaArch.L1_TILE_OFFSET
         nb_cluster_cores = tree.nb_pulp_cores
+        # No cluster cores means no cluster at all, as a tile with EnCluster
+        # = 0 in the RTL: no cores, no instruction cache and no event unit
+        has_cluster = nb_cluster_cores > 0
 
         #
         # Cores and instruction caches
@@ -206,9 +209,10 @@ class MagiaV4Tile(gvsoc.systree.Component):
         # Instruction cache of the cluster (MagiaClusterDefaultCfg): per core
         # a fully associative L0 of 512 B, a shared L1 of 4 KiB with 4 ways,
         # 256-bit lines, serial lookup, 4 refills in flight
-        pulp_i_cache = MagiaIcache(self, f'tile-{tid}-pulp-icache',
-            nb_cores=nb_cluster_cores, l0_line_count=16, l1_line_count=32,
-            l1_way_count=4, line_width=256, serial_lookup=True, num_axi_outstanding=4)
+        if has_cluster:
+            pulp_i_cache = MagiaIcache(self, f'tile-{tid}-pulp-icache',
+                nb_cores=nb_cluster_cores, l0_line_count=16, l1_line_count=32,
+                l1_way_count=4, line_width=256, serial_lookup=True, num_axi_outstanding=4)
 
         # Control registers of Spatz, of the cluster and of the collectives
         tile_ctrl = TileCtrl(self, f'tile-{tid}-tile-ctrl', nb_cluster_cores=nb_cluster_cores)
@@ -299,10 +303,11 @@ class MagiaV4Tile(gvsoc.systree.Component):
         # barrier per core, NB_HW_MUT 1, DISP_FIFO_DEPTH 8), with the cluster
         # map of cluster_event_map: SW events 11:4, barrier 16, mutex 17,
         # dispatch 18; no SoC events reach it (bit 1, reserved).
-        cluster_event_unit = MagiaEventUnit(self, f'tile-{tid}-cluster-event-unit',
-            nb_core=nb_cluster_cores, nb_mutexes=1, nb_barriers=nb_cluster_cores,
-            dispatch_size=8, nb_fifo_events=8, fifo_event=1, dispatch_event=18,
-            mutex_event=17, barrier_event=16, wakeup_req_latency=1, sw_event_base=4)
+        if has_cluster:
+            cluster_event_unit = MagiaEventUnit(self, f'tile-{tid}-cluster-event-unit',
+                nb_core=nb_cluster_cores, nb_mutexes=1, nb_barriers=nb_cluster_cores,
+                dispatch_size=8, nb_fifo_events=8, fifo_event=1, dispatch_event=18,
+                mutex_event=17, barrier_event=16, wakeup_req_latency=1, sw_event_base=4)
 
         #
         # Input ports of the x-bars
@@ -386,8 +391,9 @@ class MagiaV4Tile(gvsoc.systree.Component):
             tile_ctrl.o_CLUSTER_ENTRY(pulp_cores[pulp_id].i_ENTRY())
             tile_ctrl.o_CLUSTER_FETCHEN(pulp_cores[pulp_id].i_FETCHEN())
 
-        pulp_i_cache.o_REFILL(self.cut('axi-slv-cut-pulp-icache', tile_xbar.i_INPUT(AXI_IN_PULP_REFILL), narrow))
-        tile_ctrl.o_CLUSTER_START(cluster_event_unit.i_EVENT(0, 13))
+        if has_cluster:
+            pulp_i_cache.o_REFILL(self.cut('axi-slv-cut-pulp-icache', tile_xbar.i_INPUT(AXI_IN_PULP_REFILL), narrow))
+            tile_ctrl.o_CLUSTER_START(cluster_event_unit.i_EVENT(0, 13))
 
         # Obi xbar -> L1: the L1 of the tile, the reserved area and the stack,
         # to TCDM port 0
@@ -401,9 +407,10 @@ class MagiaV4Tile(gvsoc.systree.Component):
             name='event-unit')
 
         # Obi xbar -> cluster event unit (the view of the other masters)
-        obi_xbar.o_MAP(self.cut('obi-mgr-cut-cluster-event-unit', cluster_event_unit.i_INPUT(), narrow),
-            RouterMapping(base=MagiaArch.CLUSTER_EU_ADDR_START, size=MagiaArch.CLUSTER_EU_SIZE,
-            remove_base=True), name='cluster-event-unit')
+        if has_cluster:
+            obi_xbar.o_MAP(self.cut('obi-mgr-cut-cluster-event-unit', cluster_event_unit.i_INPUT(), narrow),
+                RouterMapping(base=MagiaArch.CLUSTER_EU_ADDR_START, size=MagiaArch.CLUSTER_EU_SIZE,
+                remove_base=True), name='cluster-event-unit')
 
         # Obi xbar -> peripheral window, below and above the control event
         # unit up to the cluster one, to the control demux. The RTL has one

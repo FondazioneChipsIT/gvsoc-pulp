@@ -177,7 +177,11 @@ class MagiaV3Tile(gvsoc.systree.Component):
                 nb_cores=1, l0_line_count=8, l1_line_count=32, l1_way_count=2,
                 line_width=256, serial_lookup=False, num_axi_outstanding=2)
 
-        if MagiaArch.PULP_ENABLE:
+        # No cluster cores means no cluster at all, as a tile with EnCluster
+        # = 0 in the RTL: no cores and no instruction cache
+        has_cluster = MagiaArch.PULP_ENABLE and tree.nb_pulp_cores > 0
+
+        if has_cluster:
             # PULP cluster cores
             pulp_cores:List[CV32PulpCore] = []
             for pulp_id in range(0,tree.nb_pulp_cores):
@@ -344,7 +348,7 @@ class MagiaV3Tile(gvsoc.systree.Component):
             cluster_regs.o_SPATZ_CLK_EN(snitch_spatz.i_FETCHEN())
             cluster_regs.o_SPATZ_START(snitch_spatz.i_IRQ(11))
 
-        if MagiaArch.PULP_ENABLE:
+        if has_cluster:
             for pulp_id in range(0,tree.nb_pulp_cores):
                 # PULP core data -> obi interconnect
                 pulp_cores[pulp_id].o_DATA(obi_xbar.i_INPUT(OBI_IN_PULP_DATA + pulp_id))
