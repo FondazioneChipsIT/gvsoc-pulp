@@ -103,7 +103,7 @@ vp::IoReqStatus KillModule::req(vp::Block *__this, vp::IoReq *req, int id)
     }
     else {
 
-      if ((offset>=_this->kill_base_address) && (offset<=(_this->kill_base_address)+_this->kill_addr_size)) {
+      if ((offset>=_this->kill_base_address) && (offset<(_this->kill_base_address)+_this->kill_addr_size)) {
         memcpy((uint8_t*)&cnf_w, data, size);
         _this->nb_recv_kill_reqs++;
         _this->trace.msg(vp::Trace::LEVEL_TRACE, "Received kill request from port %d at address 0x%08lx. Current kill count is %d. Number of cores to wait is %d. Received exit code is %d.\n",id,offset,_this->nb_recv_kill_reqs,_this->nb_cores_to_wait, cnf_w);
