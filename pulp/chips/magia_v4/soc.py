@@ -20,8 +20,6 @@ import gvsoc.systree
 import vp.clock_domain
 from memory.memory_v3 import Memory, MemoryV3Config
 from interco.router_v2 import Router, RouterConfig, RouterMapping, KIND_UNTIMED, KIND_BANDWIDTH
-from interco.remapper_v2 import Remapper, RemapperConfig
-from gvsoc.signature import IoV2Sync
 from utils.loader.loader_v2 import ElfLoader
 
 from pulp.chips.magia_v4.tile import MagiaV4Tile
@@ -76,12 +74,20 @@ class MagiaV4Soc(gvsoc.systree.Component):
         killer=KillModule(self,'kill-module',kill_addr_base=MagiaArch.TEST_END_ADDR_START,kill_addr_size=MagiaArch.TEST_END_SIZE,nb_cores_to_wait=tree.nb_clusters,
                           nb_inputs=tree.nb_clusters, done_irq_enable=MagiaArch.ENABLE_PCIE_VFIO)
 
-        # Fetch enable module: polls, through the L2, the fetch enable word written
-        # by the host in its RAM and starts the tiles; only with UMA (with the
-        # PCIe bridge the bridge starts the tiles, without UMA the ELF loader)
+        # Fetch enable module: polls the fetch enable word written by the host
+        # and starts the tiles; only with UMA (with the PCIe bridge the bridge
+        # starts the tiles, without UMA the ELF loader). It reads the words from
+        # the CSR memfd or, without it, from the host RAM memfd.
         fetch_enabler = None
         if uma:
+            if MagiaArch.UMA_CSR_MEMFD_PATH:
+                fetch_memfd = MagiaArch.UMA_CSR_MEMFD_PATH
+                fetch_memfd_base = MagiaArch.CSR_PAGE_ADDR
+            else:
+                fetch_memfd = MagiaArch.UMA_MEMFD_PATH
+                fetch_memfd_base = MagiaArch.UMA_HOST_ADDR_START
             fetch_enabler=FetchEnableModuleV2(self,'fetch-module',fetch_en_addr_base=MagiaArch.FETCH_ENABLE_ADDR_START,fetch_en_addr_size=MagiaArch.FETCH_ENABLE_SIZE,
+                                            memfd=fetch_memfd, memfd_host_base=fetch_memfd_base,
                                             poll_period=MagiaArch.FETCH_ENABLE_POLL_PERIOD,
                                             # Entry point written by the host next to the fetch enable word
                                             entry_addr=MagiaArch.ENTRY_ADDR_START)
@@ -135,16 +141,6 @@ class MagiaV4Soc(gvsoc.systree.Component):
         l2_loader_xbar.o_MAP(l2_xbar.i_INPUT(1), RouterMapping(base=MagiaArch.L2_ADDR_START,
             size=tree.l2_size, remove_base=True), name='L2')
         l2_loader_xbar.add_mapping('error')
-
-        # The fetch enable module reads its words from the L2 with absolute
-        # addresses, through a remapper stripping the L2 base address. Synchronous
-        # (IoV2Sync) as the module and the L2, unlike the router of the loader.
-        if uma:
-            l2_fetch_remap = Remapper(self, 'L2-fetch-remap', config=RemapperConfig(
-                base=MagiaArch.L2_ADDR_START, size=tree.l2_size, target_base=0),
-                signature=IoV2Sync())
-            fetch_enabler.o_MEM(l2_fetch_remap.i_INPUT())
-            l2_fetch_remap.o_OUTPUT(l2_mem.i_INPUT())
 
         # Create Tile matrix for IDs
         # --------------> X direction

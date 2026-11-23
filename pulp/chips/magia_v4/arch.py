@@ -77,13 +77,23 @@ class MagiaArch:
     TEST_END_ADDR_START     = 0xCCFF_0000
     TEST_END_SIZE           = 0x400
     FETCH_ENABLE_SIZE       = 0x4
-    # Fetch enable word after the test end area, as on magia_v2. It is in the
-    # L2 window (host RAM): the fetch enable module reads it through the L2.
+    # Fetch enable word after the test end area, as on magia_v2
     FETCH_ENABLE_ADDR_START = TEST_END_ADDR_START + TEST_END_SIZE
-    # Entry point word, written by the host (RTEMS) before the fetch enable
-    # pattern, also read through the L2
+    # Entry point word, written by the host (RTEMS) before the fetch enable pattern
     ENTRY_ADDR_START        = FETCH_ENABLE_ADDR_START + 0x8
-    # Cycles between two reads of the fetch enable word (each read is an L2 access)
+    # UMA control words (fetch enable, entry): held by a dedicated CSR memfd,
+    # created by the launcher, holding the host page CSR_PAGE_ADDR (memfd offset
+    # 0 = CSR_PAGE_ADDR, the words at offset 0x400 and 0x408). QEMU maps it over
+    # that page (alias of the words when its RAM covers the page, whole page
+    # when its RAM ends below it). The fetch enable module reads the words from
+    # it directly, not through the L2. MAGIA cores still see the L2 at these
+    # addresses (TEST_END goes to the kill module), not the CSR memfd.
+    # Empty UMA_CSR_MEMFD_PATH: the words stay in the host RAM / L2 memfd
+    # (UMA_MEMFD_PATH) and the module reads them from there (single memfd).
+    UMA_CSR_MEMFD_PATH      = '/tmp/magia_csr'
+    CSR_PAGE_ADDR           = 0xCCFF_0000
+    CSR_PAGE_SIZE           = 0x1000
+    # Cycles between two reads of the fetch enable word
     FETCH_ENABLE_POLL_PERIOD = 1000
     # UMA: the shared memfd is the host RAM (QEMU/RTEMS), whose offset 0 is at
     # UMA_HOST_ADDR_START. The L2 is backed by the part of the memfd that the
@@ -95,7 +105,7 @@ class MagiaArch:
     # Must match the DRAM base of the QEMU cheshire machine
     # (CHESHIRE_DRAM in qemu/hw/riscv/cheshire.c), RTEMS is linked there too.
     UMA_HOST_ADDR_START     = 0xA000_0000
-    # Shared memory file (host RAM), created by the launcher. If the path is 
+    # Shared memory file (host RAM), created by the launcher. If the path is
     # not empty: the L2 is the host RAM (memfd) and the host starts the tiles
     # through the fetch enable word, in this case ENABLE_PCIE_VFIO must be false
     # otherwise a runtime error is raised. If the path is empty: the L2 is a
